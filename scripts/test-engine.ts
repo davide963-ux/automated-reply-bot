@@ -723,6 +723,18 @@ async function main(): Promise<void> {
   const mentions = await xc.getMentions('42', '4000');
   check('mentions parsed with author username via expansions', mentions.length === 1 && mentions[0]!.authorUsername === 'alice' && mentions[0]!.conversationId === '5001');
   check('since_id forwarded', xs.requests[reqsBefore]!.query.get('since_id') === '4000');
+  // Reads are billed per post RETURNED, not per request.
+  const xCost = async () => Number((await one('select coalesce(sum(estimated_x_cost),0)::text v from daily_usage')) ?? 0);
+  xs.mentionsBody = { data: [1, 2, 3, 4, 5].map((i) => ({ id: String(7000 + i), text: `mention number ${i}`, author_id: '7', conversation_id: String(7000 + i), created_at: new Date().toISOString() })) };
+  const costBefore = await xCost();
+  const five = await xc.getMentions('42');
+  const costDelta = (await xCost()) - costBefore;
+  check('a read that returns 5 posts is costed as 5 reads (0.025), not as one request', five.length === 5 && Math.abs(costDelta - 0.025) < 0.0006, String(costDelta));
+  xs.mentionsBody = { data: [] };
+  const costBefore2 = await xCost();
+  await xc.getMentions('42');
+  check('a read that returns nothing costs nothing', Math.abs((await xCost()) - costBefore2) < 0.00001);
+  xs.mentionsBody = undefined;
   check('requests are counted + costed in daily_usage', Number(await one('select coalesce(sum(x_api_requests),0)::text v from daily_usage')) > 5 && Number(await one('select coalesce(sum(estimated_x_cost),0)::text v from daily_usage')) > 0);
   // rate limit
   xs.tweetQueue.push((_q, r) => json(r, 429, { title: 'Too Many Requests' }, { 'x-rate-limit-reset': String(Math.floor(Date.now() / 1000) + 600) }));

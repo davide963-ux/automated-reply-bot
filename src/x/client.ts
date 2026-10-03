@@ -73,7 +73,9 @@ export function createXClient(accountId: string): XApi {
       },
       opts.timeoutMs ?? 20_000,
     );
-    await recordUsage(accountId, 'x_api_requests', 1, method === 'POST' ? config.x.costPerWrite : config.x.costPerRead);
+    // Writes are billed per request. Reads are billed per post/user RETURNED, so their cost is added in read(),
+    // once the response is parsed (a poll returning 30 mentions must not count as one cheap call).
+    await recordUsage(accountId, 'x_api_requests', 1, method === 'POST' ? config.x.costPerWrite : 0);
 
     if (res.status === 429) {
       const reset = Number(res.headers.get('x-rate-limit-reset'));
@@ -96,7 +98,11 @@ export function createXClient(accountId: string): XApi {
     const res = await send('GET', path, { query });
     if (res.status === 401 || res.status === 403) throw new XAuthError(`X read refused (HTTP ${res.status}) on ${path}`);
     if (!res.ok) throw new Error(`X read failed: HTTP ${res.status} on ${path}`);
-    return res.json();
+    const json = await res.json();
+    const data = (json as { data?: unknown } | null)?.data;
+    const returned = Array.isArray(data) ? data.length : data ? 1 : 0;
+    if (returned > 0) await recordUsage(accountId, 'x_api_requests', 0, config.x.costPerRead * returned);
+    return json;
   }
 
   const listQuery = (extra: Record<string, string | undefined>) => ({
