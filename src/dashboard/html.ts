@@ -81,7 +81,7 @@ const views = {
         ...(lastCollect ? [el('div', { className: 'card' }, el('b', {}, 'Last fetch, per source'), el('table', {}, lastCollect.sources.map((x) => el('tr', {},
           el('td', {}, x.name),
           el('td', { className: x.error ? 'ERROR' : (x.items === 0 ? 'MEDIUM' : 'RUNNING') }, x.error ? 'FAILED' : (x.items === 0 ? '0 items' : x.items + ' items')),
-          el('td', { className: 'mut' }, x.error || (x.items === 0 ? 'feed answered but was empty or blocked: check its URL in the sources table' : x.newItems + ' new')))))),
+          el('td', { className: 'mut' }, x.error || (x.items === 0 ? 'feed answered but was empty or blocked: check its URL in the sources table' : x.newItems + ' new'))))),
           el('div', { className: 'mut' }, lastCollect.eligible + ' of the stories are eligible to post (confidence at or above min_confidence). See the News tab for each score and reason.'))] : []),
       ]),
       step(s.llm.configured, ready ? '3. LLM' : '2. LLM', s.llm.configured ? 'Provider, key and model are set.' : 'Set LLM_PROVIDER (anthropic or openai), LLM_API_KEY and LLM_MODEL in the Vercel environment variables, then redeploy.'),
