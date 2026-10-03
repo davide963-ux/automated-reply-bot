@@ -241,6 +241,17 @@ async function main(): Promise<void> {
   const a5 = probe({ DATABASE_URL: 'postgres://x/db' });
   check('local default redirect when not on Vercel', a5.redirect === 'http://127.0.0.1:3000/callback');
 
+  section('dashboard page script');
+  const { dashboardHtml } = require('../src/dashboard/html') as typeof import('../src/dashboard/html');
+  const pageHtml = dashboardHtml('testnonce');
+  const pageJs = pageHtml.split('<script nonce="testnonce">')[1]!.split('</script>')[0]!;
+  let pageParses = true;
+  let pageErr = '';
+  try { new Function(pageJs); } catch (e) { pageParses = false; pageErr = (e as Error).message; }
+  check('the dashboard inline script is valid JavaScript (a syntax error leaves a blank page with no tabs)', pageParses, pageErr);
+  check('every tab named in the script has a view', ['Setup', 'Overview', 'Approvals', 'Activity', 'News', 'Posts', 'Replies', 'Settings'].every((t) => new RegExp(`async ${t}\\(`).test(pageJs)));
+  check('the page script never uses innerHTML (untrusted text is rendered with textContent)', !pageJs.includes('innerHTML'));
+
   section('Vercel deploy config');
   const fs = require('fs') as typeof import('fs');
   const vj = JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as { outputDirectory?: string; buildCommand?: string; functions?: Record<string, { includeFiles?: string }>; crons?: Array<{ path: string; schedule: string }> };

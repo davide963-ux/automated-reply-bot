@@ -396,7 +396,7 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 134 checks, pure logic, no DB
+npm run test:unit      # 137 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
 npm run test:engine    # 179 checks, the whole engine end to end
 ```
