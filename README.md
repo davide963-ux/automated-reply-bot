@@ -275,8 +275,8 @@ The bot needs an LLM API key (a **chat subscription does not include API access*
 | Provider | Set these in Vercel | Notes |
 |---|---|---|
 | **Anthropic (Claude), recommended** | `LLM_PROVIDER=anthropic`, `LLM_API_KEY=<key from console.anthropic.com>`, `LLM_MODEL=<model id>` | The best-supported path in this code. A mid-priced current model is plenty for short posts and the safety judge. Set `LLM_PRICE_IN_PER_MTOK` / `LLM_PRICE_OUT_PER_MTOK` from the provider's price list so the daily spend cap is accurate |
-| xAI (Grok) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=https://api.x.ai`, `LLM_API_KEY=<key from console.x.ai>`, `LLM_MODEL=<model id>` | Uses the OpenAI-compatible path, which is **less tested** here than the Anthropic one |
-| Other OpenAI-compatible services (Groq, OpenRouter, ...) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=<host without /v1>` | Same caveat. The code appends `/v1/chat/completions` to `LLM_BASE_URL` |
+| xAI (Grok) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=https://api.x.ai/v1`, `LLM_API_KEY=<key from console.x.ai>`, `LLM_MODEL=<exact model id from the console>` | Uses the OpenAI-compatible path. Tested against a fake xAI-style server, **not** against the real xAI service. Model names change and old ones are retired, so copy the id from the console. If calls are slow or cut off, add `LLM_EFFORT=low`. Set `LLM_PRICE_IN_PER_MTOK` / `LLM_PRICE_OUT_PER_MTOK` from the console's price list |
+| Other OpenAI-compatible services (Groq, OpenRouter, Gemini's compatibility endpoint, ...) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=<the provider's base URL>` | Same caveat. `LLM_BASE_URL` may be a bare host, a `.../v1` base, or the full `.../chat/completions` URL. `LLM_SEND_TEMPERATURE=false` if the provider rejects `temperature` |
 
 `LLM_MODEL` has no default on purpose: model names change. Take the exact id from the provider's model list. For the Anthropic provider the code never sends `temperature` (current Claude models reject it) and runs current reasoning models at low effort (`LLM_EFFORT` to change).
 
@@ -409,9 +409,9 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 145 checks, pure logic, no DB
+npm run test:unit      # 166 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
-npm run test:engine    # 190 checks, the whole engine end to end
+npm run test:engine    # 199 checks, the whole engine end to end
 ```
 
 `test:limits` and `test:engine` start a throwaway embedded Postgres (no Docker). **Postgres refuses to run as root**, so run them as a normal user.

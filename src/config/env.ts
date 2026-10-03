@@ -93,6 +93,8 @@ const schema = z.object({
   LLM_BASE_URL: optStr,
   // Anthropic only. Default: "low" for current reasoning-capable Claude models (fast and cheap for short posts),
   // nothing for older models. "none" never sends it. Others: medium | high | xhigh | max.
+  // OpenAI-compatible providers only: send the `temperature` the engine asks for (some reasoning models reject it).
+  LLM_SEND_TEMPERATURE: flag(true),
   LLM_EFFORT: z.preprocess(emptyToUndef, z.enum(['none', 'low', 'medium', 'high', 'xhigh', 'max']).optional()),
   LLM_PRICE_IN_PER_MTOK: num(3, 0, 1000),
   LLM_PRICE_OUT_PER_MTOK: num(15, 0, 1000),
@@ -170,6 +172,7 @@ function load() {
       model: e.LLM_MODEL,
       baseUrl: e.LLM_BASE_URL,
       effort: e.LLM_EFFORT,
+      sendTemperature: e.LLM_SEND_TEMPERATURE,
       priceInPerMTok: e.LLM_PRICE_IN_PER_MTOK,
       priceOutPerMTok: e.LLM_PRICE_OUT_PER_MTOK,
     },

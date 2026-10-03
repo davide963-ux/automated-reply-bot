@@ -54,6 +54,62 @@ export function anthropicBody(model: string, req: LlmRequest, effortSetting?: st
   };
 }
 
+/** Chat-completions URL. Accepts a bare host, a ".../v1" base (what most providers document), or the full path. */
+export function openaiUrl(baseUrl?: string): string {
+  const base = (baseUrl ?? 'https://api.openai.com').replace(/\/+$/, '');
+  if (/\/chat\/completions$/.test(base)) return base;
+  if (/\/(v1|openai|v1beta\/openai)$/.test(base)) return `${base}/chat/completions`;
+  return `${base}/v1/chat/completions`;
+}
+
+/** Headroom for reasoning tokens: many current chat models reason first and those tokens count against the limit. */
+const OPENAI_HEADROOM = 2500;
+
+export function openaiBody(
+  model: string,
+  req: LlmRequest,
+  opts: { effort?: string; sendTemperature: boolean },
+): Record<string, unknown> {
+  return {
+    model,
+    max_tokens: req.maxTokens + OPENAI_HEADROOM,
+    ...(opts.sendTemperature && req.temperature !== undefined ? { temperature: req.temperature } : {}),
+    // Opt-in only (LLM_EFFORT): not every OpenAI-compatible server knows this field.
+    ...(opts.effort === 'low' || opts.effort === 'medium' || opts.effort === 'high' ? { reasoning_effort: opts.effort } : {}),
+    messages: [
+      { role: 'system', content: req.system },
+      { role: 'user', content: req.user },
+    ],
+  };
+}
+
+const openaiReplySchema = z.object({
+  choices: z.array(z.object({ message: z.object({ content: z.string().nullable().optional() }), finish_reason: z.string().nullable().optional() })).min(1),
+  usage: z
+    .object({ prompt_tokens: z.number(), completion_tokens: z.number(), total_tokens: z.number().optional() })
+    .optional(),
+});
+
+export function parseOpenAiReply(json: unknown): LlmResponse {
+  const data = openaiReplySchema.parse(json);
+  const choice = data.choices[0]!;
+  if (choice.finish_reason === 'content_filter') throw new LlmUnavailableError('the provider filtered this request (content_filter)');
+  if (choice.finish_reason === 'length') {
+    throw new LlmUnavailableError('the response was cut off (token limit, often spent on reasoning): set LLM_EFFORT=low or use a non-reasoning model');
+  }
+  const input = data.usage?.prompt_tokens ?? 0;
+  // Providers disagree on whether reasoning tokens are inside completion_tokens; total - prompt covers both
+  // (it can only over-estimate the cost, which is the safe direction for a spend cap).
+  const output = Math.max(data.usage?.completion_tokens ?? 0, (data.usage?.total_tokens ?? 0) - input);
+  return { text: choice.message.content ?? '', inputTokens: input, outputTokens: output };
+}
+
+function errorDetail(j: unknown): string | undefined {
+  const e = (j as { error?: unknown } | null)?.error;
+  const msg = typeof e === 'string' ? e : (e as { message?: string } | undefined)?.message;
+  return msg ? String(msg).slice(0, 200) : undefined;
+}
+
 /** Raw provider call. Supported: "anthropic" and any OpenAI-compatible chat API ("openai"). */
 export function createProviderClient(): LlmClient {
   const { provider, apiKey, model, baseUrl } = config.llm;
@@ -101,11 +157,7 @@ export function createProviderClient(): LlmClient {
   }
 
   if (provider === 'openai') {
-    const url = `${(baseUrl ?? 'https://api.openai.com').replace(/\/+$/, '')}/v1/chat/completions`;
-    const schema = z.object({
-      choices: z.array(z.object({ message: z.object({ content: z.string().nullable() }) })).min(1),
-      usage: z.object({ prompt_tokens: z.number(), completion_tokens: z.number() }).optional(),
-    });
+    const url = openaiUrl(baseUrl);
     return {
       async complete(req) {
         const res = await fetchWithTimeout(
@@ -113,25 +165,16 @@ export function createProviderClient(): LlmClient {
           {
             method: 'POST',
             headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({
-              model,
-              max_tokens: req.maxTokens,
-              temperature: req.temperature ?? 0.7,
-              messages: [
-                { role: 'system', content: req.system },
-                { role: 'user', content: req.user },
-              ],
-            }),
+            body: JSON.stringify(openaiBody(model, req, { effort: config.llm.effort, sendTemperature: config.llm.sendTemperature })),
           },
           60_000,
         );
-        if (!res.ok) throw new LlmUnavailableError(`HTTP ${res.status} from ${safeUrl(url)}`);
-        const data = schema.parse(await res.json());
-        return {
-          text: data.choices[0]?.message.content ?? '',
-          inputTokens: data.usage?.prompt_tokens ?? 0,
-          outputTokens: data.usage?.completion_tokens ?? 0,
-        };
+        if (!res.ok) {
+          // Error shapes differ: {"error":{"message":..}} (OpenAI) or {"error":"..."} (xAI). Neither echoes the key.
+          const detail = await res.json().then((j) => errorDetail(j), () => undefined);
+          throw new LlmUnavailableError(`HTTP ${res.status} from ${safeUrl(url)}${detail ? `: ${detail}` : ''}`);
+        }
+        return parseOpenAiReply(await res.json());
       },
     };
   }
