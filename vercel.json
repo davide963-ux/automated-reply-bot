@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "api/tick.ts": { "maxDuration": 60 },
+    "api/dashboard.ts": { "maxDuration": 30 }
+  }
+}

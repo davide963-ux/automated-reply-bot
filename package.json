@@ -2,8 +2,8 @@
   "name": "crypto-x-agent",
   "version": "0.1.0",
   "private": true,
-  "description": "Autonomous crypto X account agent (Phase 1: structure + database)",
-  "main": "dist/index.js",
+  "description": "Autonomous crypto X account agent: news -> posts, conversations -> replies, with hard daily limits enforced in Postgres",
+  "main": "dist/src/worker.js",
   "engines": {
     "node": ">=20"
   },
@@ -11,8 +11,17 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/db/migrate.ts",
-    "start": "tsx src/index.ts",
-    "test:limits": "tsx scripts/test-limits.ts"
+    "start": "tsx src/worker.ts",
+    "start:prod": "node dist/src/worker.js",
+    "status": "tsx src/index.ts status",
+    "tick": "tsx src/index.ts tick",
+    "collect": "tsx src/index.ts collect",
+    "x:auth": "tsx scripts/x-auth.ts",
+    "x:test-post": "tsx scripts/x-test-post.ts",
+    "test": "npm run test:unit && npm run test:limits && npm run test:engine",
+    "test:unit": "tsx scripts/test-unit.ts",
+    "test:limits": "tsx scripts/test-limits.ts",
+    "test:engine": "tsx scripts/test-engine.ts"
   },
   "dependencies": {
     "dotenv": "^18.0.5",

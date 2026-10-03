@@ -6,7 +6,7 @@ const log = logger.child({ module: 'db' });
 
 export const pool = new Pool({
   connectionString: config.db.url,
-  max: 10,
+  max: config.db.poolMax,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 10_000,
   // Managed Postgres (e.g. Supabase) usually requires TLS. Many managed hosts

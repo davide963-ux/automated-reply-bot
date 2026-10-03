@@ -3,7 +3,9 @@
     "target": "ES2022",
     "module": "node16",
     "moduleResolution": "node16",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "outDir": "dist",
     "rootDir": ".",
     "strict": true,
@@ -16,5 +18,9 @@
     "resolveJsonModule": true,
     "sourceMap": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "api/**/*.ts"
+  ]
 }

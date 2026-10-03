@@ -1,10 +1,21 @@
-import { readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { closePool, pool } from './client';
 import { logger } from '../lib/logger';
 
 const log = logger.child({ module: 'migrate' });
-const SQL_DIR = join(__dirname, '..', '..', 'sql');
+
+/** Works from src/ (tsx) and from the compiled dist/src/ output. */
+function findSqlDir(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 5; i++) {
+    const candidate = join(dir, 'sql');
+    if (existsSync(candidate)) return candidate;
+    dir = join(dir, '..');
+  }
+  throw new Error('sql/ directory not found');
+}
+const SQL_DIR = findSqlDir();
 
 /**
  * Applies sql/*.sql in filename order. Each file runs in its own transaction
