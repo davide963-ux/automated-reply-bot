@@ -8,6 +8,7 @@ import { approveItem, createManualPost, pauseBot, rejectItem, resumeBot } from '
 import { collectNews } from '../news/collector';
 import type { Deps } from '../engine/deps';
 import { runTick } from '../engine/tick';
+import { describeDbError } from '../lib/dberror';
 import { logger } from '../lib/logger';
 import { getUsageToday } from '../services/rateLimit';
 import { dashboardHtml } from './html';
@@ -236,6 +237,8 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
       }
     } catch (err) {
       log.error('dashboard request failed', { err });
+      const dbHint = describeDbError(err);
+      if (dbHint) return send(res, 503, { error: dbHint });
       const msg = (err as Error).message;
       // Validation errors from writeSetting are safe to show; anything else is generic.
       const safe = /^(unknown setting|invalid value)/.test(msg) ? msg : 'internal error';

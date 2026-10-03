@@ -158,7 +158,7 @@ async function show(t) {
   tab = t;
   [...$('#tabs').children].forEach((b) => b.className = b.textContent === t ? 'on' : '');
   try { const s = await header(); if (s.schemaReady === false && t !== 'Setup') return show('Setup'); const nodes = await views[t](s); const v = $('#view'); v.replaceChildren(...nodes); }
-  catch (e) { toast(e.message, true); }
+  catch (e) { toast(e.message, true); $('#view').replaceChildren(el('div', { className: 'card' }, el('b', { className: 'ERROR' }, 'Problem: '), e.message, el('div', { className: 'mut' }, 'Check the environment variables in Vercel (Settings, Environment Variables), then redeploy.'))); }
 }
 show(tab);
 </script></body></html>`;
