@@ -43,12 +43,21 @@ function parseNewsApi(json: string): FeedItem[] {
   return out;
 }
 
+export interface SourceReport {
+  name: string;
+  /** items found in the feed (0 from a source that answered usually means an empty or blocked feed) */
+  items: number;
+  newItems: number;
+  error?: string;
+}
+
 export interface CollectResult {
   sourcesOk: number;
   sourcesFailed: number;
   newItems: number;
   evaluated: number;
   eligible: number;
+  sources: SourceReport[];
 }
 
 /**
@@ -66,7 +75,7 @@ export async function collectNews(
     `select id, name, kind, url, reliability from sources where enabled and url is not null order by name`,
   );
 
-  const result: CollectResult = { sourcesOk: 0, sourcesFailed: 0, newItems: 0, evaluated: 0, eligible: 0 };
+  const result: CollectResult = { sourcesOk: 0, sourcesFailed: 0, newItems: 0, evaluated: 0, eligible: 0, sources: [] };
 
   for (const src of sources) {
     try {
@@ -81,16 +90,21 @@ export async function collectNews(
         continue;
       }
       result.sourcesOk++;
+      let added = 0;
       for (const it of items) {
         const ins = await query(
           `insert into news_items (source_id, url, title, summary, published_at, content_hash, source_reliability)
            values ($1,$2,$3,$4,$5,$6,$7) on conflict (url) do nothing`,
           [src.id, it.url, it.title, it.summary, it.publishedAt, contentHash(it.title), src.reliability],
         );
-        result.newItems += ins.rowCount ?? 0;
+        added += ins.rowCount ?? 0;
       }
+      result.newItems += added;
+      result.sources.push({ name: src.name, items: items.length, newItems: added });
     } catch (err) {
       result.sourcesFailed++;
+      // The message names the HTTP status or timeout; it never contains secrets (URLs are logged without query strings).
+      result.sources.push({ name: src.name, items: 0, newItems: 0, error: String((err as Error).message).slice(0, 160) });
       log.warn('news source failed, skipping', { source: src.name, err });
     }
   }
@@ -116,7 +130,7 @@ interface OpenRow {
   published_at: Date | null;
   fetched_at: Date;
   source_reliability: string | null;
-  decision: 'PENDING' | 'POST' | 'WAIT_FOR_CONFIRMATION';
+  decision: 'PENDING' | 'POST' | 'WAIT_FOR_CONFIRMATION' | 'IGNORE';
 }
 
 /** Re-score everything still open (PENDING / WAIT / unused POST) inside the freshness window. */
@@ -145,7 +159,12 @@ export async function evaluateOpenNews(
   const { rows: open } = await query<OpenRow>(
     `select n.id, n.url, n.title, n.summary, n.published_at, n.fetched_at, n.source_reliability::text, n.decision
        from news_items n
-      where n.decision in ('PENDING','WAIT_FOR_CONFIRMATION','POST')
+      where (n.decision in ('PENDING','WAIT_FOR_CONFIRMATION','POST')
+             -- Ignored only because of its SCORE: re-score it, so changing min_confidence (or the duplicate
+             -- history) takes effect on stories already collected. Final reasons (too old, expired, model SKIP) stay final.
+             or (n.decision = 'IGNORE' and (n.decision_reason like 'confidence %'
+                                            or n.decision_reason like 'low crypto relevance%'
+                                            or n.decision_reason like 'duplicates%')))
         and not exists (select 1 from posts p where p.news_item_id = n.id)
         and n.fetched_at > now() - make_interval(hours => $1)`,
     [windowH],

@@ -81,7 +81,7 @@ export async function loadSettings(): Promise<Settings> {
     maxRepliesPerDay: Math.min(pick('max_replies_per_day', HARD_LIMITS.repliesPerDay), HARD_LIMITS.repliesPerDay),
     maxTotalPerDay: Math.min(pick('max_total_per_day', HARD_LIMITS.totalPerDay), HARD_LIMITS.totalPerDay),
     professionalRatio: pick('professional_ratio', 0.5),
-    minConfidence: pick('min_confidence', 0.7),
+    minConfidence: pick('min_confidence', 0.6),
     personality: pick('personality', 'crypto-native, concise, slightly sarcastic'),
     activeHours: pick('active_hours', [{ start: '08:00', end: '23:00' }]),
     minGapMinutes: pick('min_gap_minutes', 90),
