@@ -73,8 +73,11 @@ const views = {
     const testText = el('input', { placeholder: 'gm, this is my first test post', maxLength: 280 });
     return [
       el('div', { className: 'card mut' }, 'Work through these from top to bottom. Nothing is posted until you press Resume AND DRY_RUN is false.'),
-      step(ready, '1. Database tables', (ready ? 'Created.' : 'Not created yet. This is safe to run more than once.') + (s.dbSource ? ' Connection variable: ' + s.dbSource : ''),
-        el('button', { className: ready ? '' : 'ok', textContent: ready ? 'Re-check' : 'Run database migration', onclick: act(async () => { const r = await api('migrate', {}); toast(r.applied.length ? 'applied: ' + r.applied.join(', ') : 'already up to date'); }) })),
+      step(ready, '1. Database tables',
+        (ready ? 'Created and up to date.'
+          : (s.applied && s.applied.length) ? 'Your data is kept. ' + s.pending.length + ' database update(s) waiting: ' + s.pending.join(', ') + '. Press the button to apply them.'
+          : 'Not created yet. This is safe to run more than once.') + (s.dbSource ? ' Connection variable: ' + s.dbSource : ''),
+        el('button', { className: ready ? '' : 'ok', textContent: ready ? 'Re-check' : ((s.applied && s.applied.length) ? 'Apply database update' : 'Run database migration'), onclick: act(async () => { const r = await api('migrate', {}); toast(r.applied.length ? 'applied: ' + r.applied.join(', ') : 'already up to date'); }) })),
       ...(!ready ? [] : [
         step(false, '2. Fetch news (no X or LLM needed)', 'Reads the news feeds and scores each story. Check the News tab afterwards.',
           el('button', { textContent: 'Fetch news now', onclick: act(async () => { const r = await api('collect', {}); lastCollect = r; toast(r.newItems + ' new, ' + r.eligible + ' eligible, ' + r.sourcesFailed + ' source(s) failed'); }) })),
@@ -134,9 +137,21 @@ const views = {
     return [el('div', { className: 'card' }, el('table', {}, events.map((e) => el('tr', {}, el('td', { className: 'mut' }, fmt(e.ts)), el('td', { className: e.action === 'ERROR' ? 'ERROR' : '' }, e.action), el('td', {}, e.decision || ''), el('td', {}, e.reason || e.result || '')))))];
   },
   async News() {
-    const { items } = await api('news', undefined, { limit: 80 });
+    const { items, summary } = await api('news', undefined, { limit: 100 });
     if (!items.length) return [el('div', { className: 'card mut' }, 'No news yet. Open Setup and press "Fetch news now", or wait for the next scheduled run.')];
-    return [el('div', { className: 'card' }, el('table', {}, items.map((n) => el('tr', {}, el('td', {}, n.source || ''), el('td', {}, n.title), el('td', {}, n.decision), el('td', { className: 'mut' }, n.confidence ?? ''), el('td', { className: 'mut' }, n.decision_reason || '')))))];
+    const total = summary.reduce((a, r) => a + r.n, 0);
+    const by = (d) => summary.filter((r) => r.decision === d).reduce((a, r) => a + r.n, 0);
+    const ignored = summary.filter((r) => r.decision === 'IGNORE').map((r) => r.reason + ' ' + r.n).join(' · ');
+    const age = (d) => { if (!d) return ''; const h = (Date.now() - new Date(d).getTime()) / 3600000; return h < 1 ? Math.round(h * 60) + 'm' : h < 48 ? Math.round(h) + 'h' : h < 24 * 60 ? Math.round(h / 24) + 'd' : Math.round(h / 24 / 30) + 'mo'; };
+    return [
+      el('div', { className: 'card' }, el('b', {}, total + ' stories: '), by('POST') + ' postable · ' + by('WAIT_FOR_CONFIRMATION') + ' waiting for a 2nd source · ' + by('IGNORE') + ' ignored',
+        el('div', { className: 'mut' }, 'Ignored because: ' + (ignored || 'nothing') + '. Postable stories are listed first.')),
+      el('div', { className: 'card' }, el('table', {}, items.map((n) => el('tr', {},
+        el('td', {}, n.source || ''), el('td', {}, n.title),
+        el('td', { className: n.decision === 'POST' ? 'RUNNING' : n.decision === 'IGNORE' ? 'mut' : 'MEDIUM' }, n.decision),
+        el('td', { className: 'mut' }, n.confidence ?? ''), el('td', { className: 'mut' }, age(n.published_at)),
+        el('td', { className: 'mut' }, n.decision_reason || ''))))),
+    ];
   },
   async Posts() {
     const { items } = await api('posts', undefined, { limit: 60 });
