@@ -252,6 +252,20 @@ async function main(): Promise<void> {
   check('every tab named in the script has a view', ['Setup', 'Overview', 'Approvals', 'Activity', 'News', 'Posts', 'Replies', 'Settings'].every((t) => new RegExp(`async ${t}\\(`).test(pageJs)));
   check('the page script never uses innerHTML (untrusted text is rendered with textContent)', !pageJs.includes('innerHTML'));
 
+  section('Anthropic request body (current Claude models reject temperature)');
+  const { anthropicBody } = require('../src/llm/client') as typeof import('../src/llm/client');
+  const rq = { system: 's', user: 'u', maxTokens: 400, temperature: 0.8, purpose: 'x' };
+  const modern = anthropicBody('claude-sonnet-7-1', rq) as { max_tokens: number; temperature?: number; output_config?: { effort: string } };
+  check('never sends temperature, even when the caller asked for one', !('temperature' in modern) && !('top_p' in modern));
+  check('a current reasoning model runs at low effort by default', modern.output_config?.effort === 'low');
+  check('...with headroom for reasoning tokens (they count against max_tokens)', modern.max_tokens === 3400);
+  const older = anthropicBody('claude-haiku-3-5', rq) as { max_tokens: number; output_config?: unknown };
+  check('an older model gets no effort field (it would be rejected) and no headroom', older.output_config === undefined && older.max_tokens === 400);
+  check('LLM_EFFORT=none disables effort even on a current model', (anthropicBody('claude-opus-9', rq, 'none') as { output_config?: unknown }).output_config === undefined);
+  check('LLM_EFFORT=medium overrides the default', (anthropicBody('claude-opus-9', rq, 'medium') as { output_config: { effort: string } }).output_config.effort === 'medium');
+  check('LLM_EFFORT is honoured on an older-looking id when set explicitly', (anthropicBody('claude-haiku-3-5', rq, 'high') as { output_config: { effort: string } }).output_config.effort === 'high');
+  check('system prompt and user message are passed through', (anthropicBody('claude-opus-9', rq) as { system: string; messages: Array<{ role: string; content: string }> }).system === 's');
+
   section('Vercel deploy config');
   const fs = require('fs') as typeof import('fs');
   const vj = JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as { outputDirectory?: string; buildCommand?: string; functions?: Record<string, { includeFiles?: string }>; crons?: Array<{ path: string; schedule: string }> };
