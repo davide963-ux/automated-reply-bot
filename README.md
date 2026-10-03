@@ -313,7 +313,7 @@ flowchart TD
 ```
 
 1. **Import** the GitHub repo into Vercel. Leave the framework preset as *Other* and leave the build settings alone: `vercel.json` already sets them (there is no website to build, only functions; `public/` just redirects `/` to the dashboard).
-2. **Database:** in the project's *Storage* tab add a free Postgres (for example Neon). Vercel adds the connection variables for you. The app reads `DATABASE_URL` and falls back to `POSTGRES_URL`. If neither exists, add `DATABASE_URL` yourself.
+2. **Database:** in the project's *Storage* tab add a free Postgres (for example Neon). Vercel adds the connection variables for you. The app uses `DATABASE_URL` if you set one, otherwise it finds the integration's own variable, including prefixed ones such as `storage_DATABASE_URL` (the pooled connection). Unpooled, non-pooling, no-SSL and Prisma variants are ignored on purpose. The Setup tab shows which variable name is in use. You do not need to copy the connection string anywhere.
 3. **Environment variables** (*Settings → Environment Variables*). Only these are needed to get started:
 
    | Variable | Value |
@@ -369,6 +369,10 @@ Overview (usage vs limits, spend vs caps, X/LLM health, job schedule), Approvals
 
 | Symptom | Likely cause |
 |---|---|
+| Vercel shows a page titled "The app is not configured correctly" | A required environment variable is missing or mistyped. The page lists the variable **names** (never values). Fix them in Vercel (*Settings, Environment Variables*) and **Redeploy**: changes only apply to new deployments. The most common ones: `DATABASE_URL` (or `POSTGRES_URL`) not set, `DATABASE_SSL` not exactly `true`/`false` |
+| Dashboard says "Cannot reach the database" / "rejected the login" / "SSL problem" | The message tells you which: check `DATABASE_URL` and `DATABASE_SSL`. Managed Postgres usually needs `DATABASE_SSL=true` |
+| Dashboard says "dashboard disabled" (503) | `DASHBOARD_TOKEN` is not set (16+ characters) |
+| Vercel's own `500 FUNCTION_INVOCATION_FAILED` page | Should no longer happen for configuration problems (see above). If it still does, open the deployment's *Logs* tab in Vercel and send me the first error line |
 | Nothing posts | Bot is PAUSED, `DRY_RUN=true`, outside `active_hours`, `next_post_not_before` not reached, no news at or above `min_confidence`, or the daily budget (including queued items) is used. The Activity tab says which |
 | Everything waits in Approvals | `AUTONOMOUS_MODE=false`, or the items are MEDIUM risk |
 | Bot paused itself | See the `BOT_PAUSED` event: X returned 401, or the authorized account does not match `X_ACCOUNT_HANDLE` |
@@ -391,7 +395,7 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 99 checks, pure logic, no DB
+npm run test:unit      # 128 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
 npm run test:engine    # 172 checks, the whole engine end to end
 ```

@@ -8,6 +8,7 @@ import { approveItem, createManualPost, pauseBot, rejectItem, resumeBot } from '
 import { collectNews } from '../news/collector';
 import type { Deps } from '../engine/deps';
 import { runTick } from '../engine/tick';
+import { describeDbError } from '../lib/dberror';
 import { logger } from '../lib/logger';
 import { getUsageToday } from '../services/rateLimit';
 import { dashboardHtml } from './html';
@@ -88,6 +89,7 @@ async function status(deps: Deps) {
     budget: config.budget,
     queue: { pendingPosts, pendingReplies, uncertain, eligibleNews: newsOpen },
     schemaReady: true,
+    dbSource: config.db.urlSource,
     x: { connected: Boolean(tok), needsReauth: tok?.needs_reauth ?? false, ...xSetup() },
     llm: { configured: Boolean(config.llm.provider && config.llm.apiKey && config.llm.model) },
     jobs,
@@ -137,6 +139,7 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
       if (route === 'status' && !mig.ready) {
         return send(res, 200, {
           schemaReady: false,
+          dbSource: config.db.urlSource,
           pending: mig.pending,
           x: { connected: false, needsReauth: false, ...xSetup() },
           llm: { configured: Boolean(config.llm.provider && config.llm.apiKey && config.llm.model) },
@@ -236,6 +239,8 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
       }
     } catch (err) {
       log.error('dashboard request failed', { err });
+      const dbHint = describeDbError(err);
+      if (dbHint) return send(res, 503, { error: dbHint });
       const msg = (err as Error).message;
       // Validation errors from writeSetting are safe to show; anything else is generic.
       const safe = /^(unknown setting|invalid value)/.test(msg) ? msg : 'internal error';

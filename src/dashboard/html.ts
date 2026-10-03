@@ -72,7 +72,7 @@ const views = {
     const testText = el('input', { placeholder: 'gm, this is my first test post', maxLength: 280 });
     return [
       el('div', { className: 'card mut' }, 'Work through these from top to bottom. Nothing is posted until you press Resume AND DRY_RUN is false.'),
-      step(ready, '1. Database tables', ready ? 'Created.' : 'Not created yet. This is safe to run more than once.',
+      step(ready, '1. Database tables', (ready ? 'Created.' : 'Not created yet. This is safe to run more than once.') + (s.dbSource ? ' Connection variable: ' + s.dbSource : ''),
         el('button', { className: ready ? '' : 'ok', textContent: ready ? 'Re-check' : 'Run database migration', onclick: act(async () => { const r = await api('migrate', {}); toast(r.applied.length ? 'applied: ' + r.applied.join(', ') : 'already up to date'); }) })),
       ...(!ready ? [] : [
         step(false, '2. Fetch news (no X or LLM needed)', 'Reads the news feeds and scores each story. Check the News tab afterwards.',
@@ -158,7 +158,7 @@ async function show(t) {
   tab = t;
   [...$('#tabs').children].forEach((b) => b.className = b.textContent === t ? 'on' : '');
   try { const s = await header(); if (s.schemaReady === false && t !== 'Setup') return show('Setup'); const nodes = await views[t](s); const v = $('#view'); v.replaceChildren(...nodes); }
-  catch (e) { toast(e.message, true); }
+  catch (e) { toast(e.message, true); $('#view').replaceChildren(el('div', { className: 'card' }, el('b', { className: 'ERROR' }, 'Problem: '), e.message, el('div', { className: 'mut' }, 'Check the environment variables in Vercel (Settings, Environment Variables), then redeploy.'))); }
 }
 show(tab);
 </script></body></html>`;

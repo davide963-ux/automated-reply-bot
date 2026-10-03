@@ -243,6 +243,84 @@ async function main(): Promise<void> {
   check('vercel.json: dashboard function bundles the sql/ migrations', vj.functions?.['api/dashboard.ts']?.includeFiles === 'sql/**' && fs.existsSync('sql/001_init.sql'));
   check('vercel.json: cron is daily (the only schedule Hobby accepts)', (vj.crons ?? []).every((c) => /^\d+ \d+ \* \* \*$/.test(c.schedule)) && (vj.crons ?? []).every((c) => fs.existsSync(`api/${c.path.replace('/api/', '')}.ts`)));
 
+  section('database variable discovery (Vercel adds a prefix such as storage_)');
+  const { findDatabaseUrl } = require('../src/config/env') as typeof import('../src/config/env');
+  const U = 'postgres://u:p@h.example/db?sslmode=require';
+  const pick = (env: Record<string, string>) => findDatabaseUrl(env as NodeJS.ProcessEnv)?.name;
+  check('explicit DATABASE_URL wins over everything', pick({ DATABASE_URL: U, storage_DATABASE_URL: U, POSTGRES_URL: U }) === 'DATABASE_URL');
+  check('then POSTGRES_URL', pick({ POSTGRES_URL: U, storage_DATABASE_URL: U }) === 'POSTGRES_URL');
+  check('the exact variable set Vercel/Neon created in this project: storage_DATABASE_URL (pooled) is chosen',
+    pick({ storage_NEON_PROJECT_ID: 'x', storage_POSTGRES_HOST: 'h', storage_POSTGRES_PASSWORD: 'p', storage_POSTGRES_PRISMA_URL: U, storage_POSTGRES_URL_NON_POOLING: U,
+           storage_DATABASE_URL: U, storage_DATABASE_URL_UNPOOLED: U, storage_POSTGRES_URL: U, storage_POSTGRES_URL_NO_SSL: U }) === 'storage_DATABASE_URL');
+  check('only POSTGRES_URL with a prefix works too', pick({ storage_POSTGRES_URL: U, storage_POSTGRES_URL_NON_POOLING: U }) === 'storage_POSTGRES_URL');
+  check('unpooled / non-pooling / no-ssl / prisma variants alone are NOT used', pick({ storage_DATABASE_URL_UNPOOLED: U, storage_POSTGRES_URL_NON_POOLING: U, storage_POSTGRES_URL_NO_SSL: U, storage_POSTGRES_PRISMA_URL: U }) === undefined);
+  check('values that are not postgres URLs are ignored', pick({ DATABASE_URL: 'not-a-url', storage_DATABASE_URL: 'mysql://x' }) === undefined);
+  check('prefix case does not matter', pick({ MY_DB_DATABASE_URL: U }) === 'MY_DB_DATABASE_URL');
+  const prefixed = probe({ storage_DATABASE_URL: 'postgres://prefixed/db', storage_DATABASE_URL_UNPOOLED: 'postgres://unpooled/db' });
+  check('config really loads from storage_DATABASE_URL (clean process)', prefixed.db === 'postgres://prefixed/db', JSON.stringify(prefixed));
+
+  section('crash-proof serverless loading (the FUNCTION_INVOCATION_FAILED incident)');
+  const { lazyHandler, summarizeBootError } = require('../src/lib/boot') as typeof import('../src/lib/boot');
+  const { describeDbError } = require('../src/lib/dberror') as typeof import('../src/lib/dberror');
+  const fakeRes = () => {
+    const r = { status: 0, headers: {} as Record<string, string>, body: '', headersSent: false,
+      writeHead(s: number, h: Record<string, string>) { r.status = s; r.headers = h; r.headersSent = true; return r; },
+      end(b?: string) { r.body = b ?? ''; } };
+    return r;
+  };
+  const fakeReq = (accept = 'text/html') => ({ headers: { accept } }) as unknown as import('http').IncomingMessage;
+  const sum = summarizeBootError(new Error('Invalid environment configuration:\n  - DATABASE_URL: required\n  - DATABASE_SSL: expected "true"|"false"'));
+  check('boot: config errors list the variable names', sum.kind === 'config' && sum.lines.length === 2 && sum.lines[0]!.startsWith('DATABASE_URL'));
+  const page1 = fakeRes();
+  await lazyHandler(() => { throw new Error('Invalid environment configuration:\n  - DATABASE_URL: required'); })(fakeReq(), page1 as unknown as import('http').ServerResponse);
+  check('boot: a config failure returns a readable 500 page, not a crash', page1.status === 500 && page1.body.includes('DATABASE_URL') && page1.body.includes('Environment Variables'));
+  const json1 = fakeRes();
+  await lazyHandler(() => { throw new Error('Invalid environment configuration:\n  - DATABASE_URL: required'); })(fakeReq('application/json'), json1 as unknown as import('http').ServerResponse);
+  check('boot: JSON clients get JSON', json1.status === 500 && JSON.parse(json1.body).details[0].startsWith('DATABASE_URL'));
+  process.env.SUPERSECRET_TOKEN = 'zzz-secret-value-123456';
+  const leak = fakeRes();
+  await lazyHandler(() => { throw new Error('boom zzz-secret-value-123456 inside'); })(fakeReq(), leak as unknown as import('http').ServerResponse);
+  check('boot: secret values are scrubbed from the page', !leak.body.includes('zzz-secret-value-123456'));
+  delete process.env.SUPERSECRET_TOKEN;
+  const xss = fakeRes();
+  await lazyHandler(() => { throw new Error('Invalid environment configuration:\n  - <script>alert(1)</script>: bad'); })(fakeReq(), xss as unknown as import('http').ServerResponse);
+  check('boot: output is HTML-escaped', !xss.body.includes('<script>alert') && xss.body.includes('&lt;script&gt;'));
+  let loads = 0;
+  const good = lazyHandler(() => { loads++; return (_q, r) => { (r as unknown as ReturnType<typeof fakeRes>).writeHead(200, {}); (r as unknown as ReturnType<typeof fakeRes>).end('hi'); }; });
+  const g1 = fakeRes(); const g2 = fakeRes();
+  await good(fakeReq(), g1 as unknown as import('http').ServerResponse);
+  await good(fakeReq(), g2 as unknown as import('http').ServerResponse);
+  check('boot: a healthy handler is loaded once and used', g1.status === 200 && g2.body === 'hi' && loads === 1);
+  const thrower = fakeRes();
+  await lazyHandler(() => () => { throw new Error('db exploded'); })(fakeReq(), thrower as unknown as import('http').ServerResponse);
+  check('boot: a handler that throws becomes a clean 500, not FUNCTION_INVOCATION_FAILED', thrower.status === 500 && !thrower.body.includes('db exploded'));
+  check('dberror: wrong password', /login/.test(describeDbError({ code: '28P01' }) ?? ''));
+  check('dberror: SSL hint', /DATABASE_SSL/.test(describeDbError(new Error('The server does not support SSL connections')) ?? ''));
+  check('dberror: unreachable (also inside an AggregateError)', /Cannot reach/.test(describeDbError({ errors: [{ code: 'ECONNREFUSED' }] }) ?? ''));
+  check('dberror: unknown errors reveal nothing', describeDbError(new Error('password=hunter2 something odd')) === undefined);
+
+  // Replay of the incident against the REAL entry point: no env at all, real HTTP server.
+  const replay = (env: Record<string, string>, route = '/api/dashboard'): { status: number; body: string } => {
+    const script = `
+      const http=require('http');
+      const h=require('./api/${route.split('/')[2]}.ts').default;
+      const s=http.createServer((q,r)=>h(q,r)).listen(0,'127.0.0.1',async()=>{
+        const res=await fetch('http://127.0.0.1:'+s.address().port+'${route}');
+        console.log(JSON.stringify({status:res.status,body:(await res.text()).slice(0,600)}));
+        s.close(); process.exit(0);
+      });`;
+    const out = execFileSync('npx', ['tsx', '-e', script], { env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '/tmp', ...env }, encoding: 'utf8', cwd: process.cwd() });
+    return JSON.parse(out.trim().split('\n').pop()!) as { status: number; body: string };
+  };
+  const noEnv = replay({});
+  check('REPLAY: dashboard with NO environment variables answers 500 with a clear page naming DATABASE_URL', noEnv.status === 500 && noEnv.body.includes('DATABASE_URL') && noEnv.body.includes('Environment Variables'), JSON.stringify(noEnv));
+  const badBool = replay({ DATABASE_URL: 'postgres://x/y', DATABASE_SSL: 'yes' });
+  check('REPLAY: a mistyped variable names the culprit', badBool.status === 500 && badBool.body.includes('DATABASE_SSL'), JSON.stringify(badBool));
+  const noToken = replay({ DATABASE_URL: 'postgres://x/y' });
+  check('REPLAY: valid config but no DASHBOARD_TOKEN -> explains how to enable (503)', noToken.status === 503 && noToken.body.includes('DASHBOARD_TOKEN'), JSON.stringify(noToken));
+  const tickNoEnv = replay({}, '/api/tick');
+  check('REPLAY: /api/tick with no environment is also a readable 500', tickNoEnv.status === 500 && tickNoEnv.body.includes('DATABASE_URL'), JSON.stringify(tickNoEnv));
+
   finish('unit tests');
 }
 
