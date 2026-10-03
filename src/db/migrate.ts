@@ -19,7 +19,14 @@ function findSqlDir(): string {
   }
   throw new Error('sql/ directory not found');
 }
-const SQL_DIR = findSqlDir();
+
+/**
+ * Resolved lazily, on first use. Looking for sql/ when this module is merely imported made every
+ * serverless function that (indirectly) imports it crash on startup when its bundle did not include sql/
+ * (Vercel packages sql/ only with the dashboard function, the only one that migrates).
+ */
+let sqlDirCache: string | undefined;
+const sqlDir = (): string => (sqlDirCache ??= findSqlDir());
 
 export interface MigrationStatus {
   ready: boolean;
@@ -29,7 +36,7 @@ export interface MigrationStatus {
 
 /** Read-only: which migrations are applied / pending. Works even before the first migration. */
 export async function migrationStatus(): Promise<MigrationStatus> {
-  const files = readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql')).sort();
+  const files = readdirSync(sqlDir()).filter((f) => f.endsWith('.sql')).sort();
   const exists = (await pool.query<{ ok: boolean }>(`select to_regclass('public.schema_migrations') is not null as ok`)).rows[0]?.ok;
   const applied = exists
     ? (await pool.query<{ filename: string }>('select filename from schema_migrations')).rows.map((r) => r.filename)
@@ -55,12 +62,12 @@ export async function runMigrations(): Promise<string[]> {
     ),
   );
 
-  const files = readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql')).sort();
+  const files = readdirSync(sqlDir()).filter((f) => f.endsWith('.sql')).sort();
   const ran: string[] = [];
 
   for (const file of files) {
     if (applied.has(file)) continue;
-    const sql = readFileSync(join(SQL_DIR, file), 'utf8');
+    const sql = readFileSync(join(sqlDir(), file), 'utf8');
     const client = await pool.connect();
     try {
       await client.query('begin');

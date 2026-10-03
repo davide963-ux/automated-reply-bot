@@ -292,6 +292,43 @@ async function main(): Promise<void> {
   check('reply: content_filter is reported as such', /filtered/.test((await expectThrows(async () => parseOpenAiReply({ choices: [{ message: { content: null }, finish_reason: 'content_filter' }] }))) ?? ''));
   check('reply: errors are LlmUnavailableError (retried later, never published)', await (async () => { try { parseOpenAiReply({ choices: [{ message: { content: '' }, finish_reason: 'length' }] }); return false; } catch (e) { return e instanceof LlmErr; } })());
 
+  section('each serverless entry point starts WITHOUT the sql/ folder (the x-connect incident)');
+  const { mkdtempSync, cpSync, symlinkSync, rmSync: rmTmp, writeFileSync } = require('fs') as typeof import('fs');
+  const { join: pjoin } = require('path') as typeof import('path');
+  const { tmpdir: osTmp } = require('os') as typeof import('os');
+  // A bundle like Vercel's for functions that do not list includeFiles: code and node_modules, no sql/.
+  const bundle = mkdtempSync(pjoin(osTmp(), 'bundle-'));
+  cpSync('src', pjoin(bundle, 'src'), { recursive: true });
+  cpSync('api', pjoin(bundle, 'api'), { recursive: true });
+  cpSync('package.json', pjoin(bundle, 'package.json'));
+  cpSync('tsconfig.json', pjoin(bundle, 'tsconfig.json'));
+  symlinkSync(pjoin(process.cwd(), 'node_modules'), pjoin(bundle, 'node_modules'), 'dir');
+  writeFileSync(pjoin(bundle, 'probe.ts'), `
+    const http = require('http');
+    const [, , file, path] = process.argv;
+    const h = require('./api/' + file + '.ts').default;
+    const s = http.createServer((q, r) => h(q, r)).listen(0, '127.0.0.1', async () => {
+      const res = await fetch('http://127.0.0.1:' + s.address().port + path);
+      console.log(JSON.stringify({ status: res.status, body: (await res.text()).slice(0, 300) }));
+      s.close(); process.exit(0);
+    });`);
+  const probeBundle = (file: string, path: string) => {
+    const out = execFileSync('npx', ['tsx', 'probe.ts', file, path], {
+      cwd: bundle, encoding: 'utf8',
+      env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '/tmp', DATABASE_URL: 'postgres://x/y', DASHBOARD_TOKEN: 'tok-1234567890abcdef', CRON_SECRET: 'cron-secret-1234567890', X_CLIENT_ID: 'cid' },
+    });
+    return JSON.parse(out.trim().split('\n').pop()!) as { status: number; body: string };
+  };
+  const bx = probeBundle('x-connect', '/api/x-connect');
+  check('x-connect (no sql/ in the bundle) answers 401 asking for the password, not "failed to start"', bx.status === 401 && !/failed to start|sql\/ directory/.test(bx.body), JSON.stringify(bx));
+  const bcb = probeBundle('x-callback', '/api/x-callback?code=a&state=b');
+  check('x-callback (no sql/) answers 400 "invalid callback", not a crash', bcb.status === 400 && /Invalid callback/.test(bcb.body), JSON.stringify(bcb));
+  const bt = probeBundle('tick', '/api/tick');
+  check('tick (no sql/) answers 401, not a crash', bt.status === 401, JSON.stringify(bt));
+  const bd = probeBundle('dashboard', '/api/dashboard');
+  check('dashboard page (no sql/) still serves the login prompt', bd.status === 401, JSON.stringify(bd));
+  rmTmp(bundle, { recursive: true, force: true });
+
   section('Vercel deploy config');
   const fs = require('fs') as typeof import('fs');
   const vj = JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as { outputDirectory?: string; buildCommand?: string; functions?: Record<string, { includeFiles?: string }>; crons?: Array<{ path: string; schedule: string }> };
