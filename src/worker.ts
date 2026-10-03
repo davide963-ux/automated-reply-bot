@@ -4,6 +4,7 @@ import { ensureAccount } from './db/accounts';
 import { closePool, dbHealthy } from './db/client';
 import { runMigrations } from './db/migrate';
 import { createDashboardHandler } from './dashboard/handler';
+import { handleXCallback, handleXConnect } from './dashboard/xconnect';
 import { createDeps } from './engine/deps';
 import { runTick } from './engine/tick';
 import { logger } from './lib/logger';
@@ -33,10 +34,15 @@ async function main(): Promise<void> {
   });
   await logEvent({ action: 'SYSTEM', decision: 'WORKER_STARTED', result: 'ok', details: { dryRun: deps.flags.dryRun, autonomous: deps.flags.autonomous } });
 
+  const dashboard = createDashboardHandler(() => deps);
   const server = config.runtime.dashboardToken
-    ? createServer((req, res) => void createDashboardHandler(() => deps)(req, res)).listen(config.runtime.port, () =>
-        log.info('dashboard listening', { port: config.runtime.port }),
-      )
+    ? createServer((req, res) => {
+        // Same routes as the Vercel functions, so X_REDIRECT_URI can be https://<host>/api/x-callback everywhere.
+        const path = new URL(req.url ?? '/', 'http://local').pathname;
+        if (path === '/api/x-connect') return void handleXConnect(req, res);
+        if (path === '/api/x-callback') return void handleXCallback(req, res);
+        return void dashboard(req, res);
+      }).listen(config.runtime.port, () => log.info('dashboard listening', { port: config.runtime.port }))
     : undefined;
   if (!server) log.warn('DASHBOARD_TOKEN not set: dashboard disabled');
 

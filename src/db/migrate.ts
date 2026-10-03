@@ -7,15 +7,36 @@ const log = logger.child({ module: 'migrate' });
 
 /** Works from src/ (tsx) and from the compiled dist/src/ output. */
 function findSqlDir(): string {
-  let dir = __dirname;
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, 'sql');
-    if (existsSync(candidate)) return candidate;
-    dir = join(dir, '..');
+  // Serverless bundles may relocate files, so also try the working directory (Vercel: /var/task).
+  const starts = [__dirname, process.cwd()];
+  for (const start of starts) {
+    let dir = start;
+    for (let i = 0; i < 5; i++) {
+      const candidate = join(dir, 'sql');
+      if (existsSync(candidate)) return candidate;
+      dir = join(dir, '..');
+    }
   }
   throw new Error('sql/ directory not found');
 }
 const SQL_DIR = findSqlDir();
+
+export interface MigrationStatus {
+  ready: boolean;
+  applied: string[];
+  pending: string[];
+}
+
+/** Read-only: which migrations are applied / pending. Works even before the first migration. */
+export async function migrationStatus(): Promise<MigrationStatus> {
+  const files = readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql')).sort();
+  const exists = (await pool.query<{ ok: boolean }>(`select to_regclass('public.schema_migrations') is not null as ok`)).rows[0]?.ok;
+  const applied = exists
+    ? (await pool.query<{ filename: string }>('select filename from schema_migrations')).rows.map((r) => r.filename)
+    : [];
+  const pending = files.filter((f) => !applied.includes(f));
+  return { ready: pending.length === 0, applied: files.filter((f) => applied.includes(f)), pending };
+}
 
 /**
  * Applies sql/*.sql in filename order. Each file runs in its own transaction

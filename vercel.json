@@ -2,6 +2,9 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
     "api/tick.ts": { "maxDuration": 60 },
-    "api/dashboard.ts": { "maxDuration": 30 }
-  }
+    "api/dashboard.ts": { "maxDuration": 60, "includeFiles": "sql/**" },
+    "api/x-connect.ts": { "maxDuration": 15 },
+    "api/x-callback.ts": { "maxDuration": 30 }
+  },
+  "crons": [{ "path": "/api/tick", "schedule": "0 6 * * *" }]
 }

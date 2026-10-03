@@ -2,8 +2,10 @@ import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { config } from '../config/env';
 import { query } from '../db/client';
+import { migrationStatus, runMigrations } from '../db/migrate';
 import { SETTING_SCHEMAS, loadSettings, writeSetting } from '../config/settings';
-import { approveItem, pauseBot, rejectItem, resumeBot } from '../engine/control';
+import { approveItem, createManualPost, pauseBot, rejectItem, resumeBot } from '../engine/control';
+import { collectNews } from '../news/collector';
 import type { Deps } from '../engine/deps';
 import { runTick } from '../engine/tick';
 import { logger } from '../lib/logger';
@@ -58,6 +60,11 @@ const str = (v: unknown, max = 500): string => (typeof v === 'string' ? v.slice(
 const intParam = (v: string | null, def: number, max: number) => Math.min(Math.max(parseInt(v ?? '', 10) || def, 1), max);
 const KIND = (v: unknown): 'post' | 'reply' | null => (v === 'post' || v === 'reply' ? v : null);
 
+/** Non-secret facts the Setup tab shows (usable before the database exists). */
+function xSetup() {
+  return { clientIdSet: Boolean(config.x.clientId), redirectUri: config.x.redirectUri, expectedHandle: config.accountHandle };
+}
+
 async function status(deps: Deps) {
   const s = await loadSettings();
   const usage = await getUsageToday(deps.accountId);
@@ -80,7 +87,8 @@ async function status(deps: Deps) {
     limits: { posts: s.maxPostsPerDay, replies: s.maxRepliesPerDay, total: s.maxTotalPerDay },
     budget: config.budget,
     queue: { pendingPosts, pendingReplies, uncertain, eligibleNews: newsOpen },
-    x: { connected: Boolean(tok), needsReauth: tok?.needs_reauth ?? false },
+    schemaReady: true,
+    x: { connected: Boolean(tok), needsReauth: tok?.needs_reauth ?? false, ...xSetup() },
     llm: { configured: Boolean(config.llm.provider && config.llm.apiKey && config.llm.model) },
     jobs,
   };
@@ -122,6 +130,25 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
       } else if (method !== 'GET') {
         return send(res, 405, { error: 'method not allowed' });
       }
+
+      // The database must be migrated before anything else works. Status and migrate are the only exceptions,
+      // so a brand-new deployment can be set up from the browser alone.
+      const mig = await migrationStatus();
+      if (route === 'status' && !mig.ready) {
+        return send(res, 200, {
+          schemaReady: false,
+          pending: mig.pending,
+          x: { connected: false, needsReauth: false, ...xSetup() },
+          llm: { configured: Boolean(config.llm.provider && config.llm.apiKey && config.llm.model) },
+          flags: { dryRun: config.flags.dryRun, autonomous: config.flags.autonomousMode },
+          handle: config.accountHandle,
+        });
+      }
+      if (route === 'migrate' && method === 'POST') {
+        const applied = await runMigrations();
+        return send(res, 200, { ok: true, applied });
+      }
+      if (!mig.ready) return send(res, 409, { error: 'database not migrated yet: open the Setup tab and run the migration' });
 
       const deps = await getDeps();
       const by = 'dashboard';
@@ -198,6 +225,12 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
           return send(res, 200, { ok: true });
         case 'tick':
           return send(res, 200, await runTick(deps));
+        case 'collect':
+          return send(res, 200, await collectNews(deps.accountId, deps.fetchText));
+        case 'testpost': {
+          const r = await createManualPost(deps, str(body.text, 400));
+          return send(res, r.ok ? 200 : 400, r);
+        }
         default:
           return send(res, 404, { error: 'unknown route' });
       }

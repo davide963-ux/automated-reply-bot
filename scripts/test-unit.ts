@@ -214,6 +214,25 @@ async function main(): Promise<void> {
   check('refresh: 503 is transient (not invalidGrant)', boomErr instanceof O.TokenError && !boomErr.invalidGrant);
   server.close();
 
+  section('environment fallbacks (clean child processes)');
+  const { execFileSync } = require('child_process') as typeof import('child_process');
+  const probe = (env: Record<string, string>): { db: string; redirect: string } => {
+    const out = execFileSync('npx', ['tsx', '-e', "const {config}=require('./src/config/env');console.log(JSON.stringify({db:config.db.url,redirect:config.x.redirectUri}))"], {
+      env: { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '/tmp', ...env }, encoding: 'utf8', cwd: process.cwd(),
+    });
+    return JSON.parse(out.trim().split('\n').pop()!) as { db: string; redirect: string };
+  };
+  const a1 = probe({ POSTGRES_URL: 'postgres://from-vercel/db' });
+  check('DATABASE_URL falls back to POSTGRES_URL (Vercel integrations)', a1.db === 'postgres://from-vercel/db');
+  const a2 = probe({ DATABASE_URL: 'postgres://explicit/db', POSTGRES_URL: 'postgres://other/db' });
+  check('DATABASE_URL wins when both are set', a2.db === 'postgres://explicit/db');
+  const a3 = probe({ DATABASE_URL: 'postgres://x/db', VERCEL_PROJECT_PRODUCTION_URL: 'my-bot.vercel.app' });
+  check('X_REDIRECT_URI defaults to the Vercel production URL', a3.redirect === 'https://my-bot.vercel.app/api/x-callback');
+  const a4 = probe({ DATABASE_URL: 'postgres://x/db', VERCEL_PROJECT_PRODUCTION_URL: 'my-bot.vercel.app', X_REDIRECT_URI: 'https://custom.example/api/x-callback' });
+  check('explicit X_REDIRECT_URI wins', a4.redirect === 'https://custom.example/api/x-callback');
+  const a5 = probe({ DATABASE_URL: 'postgres://x/db' });
+  check('local default redirect when not on Vercel', a5.redirect === 'http://127.0.0.1:3000/callback');
+
   finish('unit tests');
 }
 

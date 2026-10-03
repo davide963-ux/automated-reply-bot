@@ -295,33 +295,67 @@ docker run --env-file .env -p 3000:3000 crypto-x-agent      # AUTO_MIGRATE=true 
 
 On Railway/Render, deploy the repo with the Dockerfile (or build command `npm ci && npm run build`, start command `npm run start:prod`).
 
-### Option B: Vercel
+### Option B: Vercel, entirely from the browser (no terminal, no laptop setup)
 
-1. Create a hosted Postgres (Neon, Supabase...). Use the **pooled** connection string. Run migrations once from your machine: `DATABASE_URL=... DATABASE_SSL=true npm run migrate`.
-2. Import the repo in Vercel (framework preset: Other). The functions are `api/tick.ts` and `api/dashboard.ts`.
-3. Set the environment variables (see the table above; at least `DATABASE_URL`, `DATABASE_SSL`, `DB_POOL_MAX=3`, `X_*`, `LLM_*`, `DASHBOARD_TOKEN`, `CRON_SECRET`, `X_ACCOUNT_HANDLE`, `ACCOUNT_TIMEZONE`). Leave `DRY_RUN=true`.
-4. Run `npm run x:auth` **locally** against the same database. Tokens live in the DB, so Vercel picks them up.
-5. Schedule `/api/tick` every ~5 minutes, with either:
-   - **Vercel Pro cron:** add to `vercel.json`: `"crons": [{ "path": "/api/tick", "schedule": "*/5 * * * *" }]`. As far as I know, Hobby plans only allow daily crons and reject a more frequent schedule at deploy time, which is why it is not in the file by default.
-   - **GitHub Actions (free):** `.github/workflows/tick.yml` is included. Set the repository variable `TICK_URL=https://<app>.vercel.app/api/tick` and the secret `CRON_SECRET`. GitHub may delay runs by a few minutes, which is harmless because every job gates itself.
-6. Open `https://<app>.vercel.app/api/dashboard` (any username, password = `DASHBOARD_TOKEN`).
+Everything the old CLI scripts did is available from the dashboard: creating the database tables, fetching news, connecting X, and the test post.
 
-One tick can make several LLM calls. If your plan's function time limit is short, use Option A.
+```mermaid
+flowchart TD
+    A[1. Import the repo in Vercel] --> B[2. Storage tab: add a free Postgres<br/>e.g. Neon, env vars are added for you]
+    B --> C[3. Settings, Environment Variables:<br/>add the few variables below]
+    C --> D[4. Deploy]
+    D --> E[5. Open /api/dashboard<br/>user: anything, password: DASHBOARD_TOKEN]
+    E --> F[Setup tab: Run database migration]
+    F --> G[Setup tab: Fetch news now]
+    G --> H[Create the X app, paste the callback URL<br/>shown on the Setup tab]
+    H --> I[Setup tab: Connect X account]
+    I --> J[Resume, still DRY_RUN: watch Activity]
+```
+
+1. **Import** the GitHub repo into Vercel (framework preset: *Other*).
+2. **Database:** in the project's *Storage* tab add a free Postgres (for example Neon). Vercel adds the connection variables for you. The app reads `DATABASE_URL` and falls back to `POSTGRES_URL`. If neither exists, add `DATABASE_URL` yourself.
+3. **Environment variables** (*Settings → Environment Variables*). Only these are needed to get started:
+
+   | Variable | Value |
+   |---|---|
+   | `DASHBOARD_TOKEN` | a long random password (16+ chars): you log in with it |
+   | `CRON_SECRET` | another long random string (16+ chars) |
+   | `DATABASE_SSL` | `true` |
+   | `DB_POOL_MAX` | `3` |
+   | `X_ACCOUNT_HANDLE` | your bot's handle without `@` |
+   | `ACCOUNT_TIMEZONE` | e.g. `Europe/Rome` |
+   | `DRY_RUN` | `true` (leave it) |
+   | `AUTONOMOUS_MODE` | `false` (leave it) |
+
+   Add the X and LLM variables later, when the Setup tab asks for them (`X_CLIENT_ID`, `X_CLIENT_SECRET`, `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL`, plus the price variables). Optionally `TOKEN_ENCRYPTION_KEY` (64 hex chars) to encrypt the X tokens in the database. Redeploy after changing variables.
+4. **Deploy**, then open `https://<your-app>.vercel.app/api/dashboard`. Your browser asks for a login: type anything as the user name and `DASHBOARD_TOKEN` as the password.
+5. Follow the **Setup** tab from top to bottom. It starts with *Run database migration* (safe to repeat) and shows the exact **callback URL** to register in the X developer portal. On Vercel it defaults to `https://<your-production-domain>/api/x-callback` (override with `X_REDIRECT_URI`). It must match what you register in X exactly.
+6. **Scheduler.** Vercel Hobby cron jobs run at most once a day, so on its own the bot would only act about once a day. `vercel.json` includes a daily cron (valid on Hobby). For a real cadence add one of:
+   - **GitHub Actions (free):** `.github/workflows/tick.yml` is included. In the GitHub repo set the variable `TICK_URL=https://<app>.vercel.app/api/tick` and the secret `CRON_SECRET` (same value as in Vercel). It calls the bot every ~5 minutes. GitHub may delay runs by a few minutes, which is harmless because every job gates itself.
+   - **Vercel Pro:** change the schedule in `vercel.json` to `*/5 * * * *`.
+   - **A free external pinger** (e.g. cron-job.org) calling `/api/tick` with the header `Authorization: Bearer <CRON_SECRET>`.
+
+   You can always press **Run tick now** in the dashboard.
+
+Hobby function duration is up to 300 s according to Vercel's docs, which is plenty for one tick. If you outgrow Hobby, or want to avoid the GitHub timing, use Option A.
+
+**How "Connect X account" works.** The button opens `/api/x-connect` (login required), which creates a PKCE challenge and a random single-use `state` stored in the database (valid 10 minutes), then sends you to X. X redirects back to `/api/x-callback`, which checks the `state`, exchanges the code, verifies that the authorized account matches `X_ACCOUNT_HANDLE` (if not, it **discards the tokens**), and stores them in the database.
 
 ---
 
 ## Going live checklist
 
-Do these in order. Each step is reversible and costs little.
+Do these in order. Each step is reversible and costs little. Every step has a dashboard button (**Setup** tab); the terminal commands are optional equivalents.
 
-1. `npm run migrate`, then `npm run status`. Expect `botStatus PAUSED`, `dryRun true`.
-2. `npm run x:auth`. Confirm it prints the right `@handle`.
-3. `npm run collect`. Open the dashboard's News tab and sanity-check scores and decisions. Tune `sources.reliability`, `min_confidence`, `tracked_keywords`.
-4. **Dry run:** keep `DRY_RUN=true`, press **Resume**. The bot runs the whole pipeline and logs `WOULD POST` without calling X. Read the drafts and the rejected items for a day or two.
-5. `DRY_RUN=false` with `AUTONOMOUS_MODE=false`, run `npm run x:test-post -- "your text" --confirm` once, then let items accumulate in **Approvals**. Approve or edit by hand for a while.
-6. Only when you trust it: `AUTONOMOUS_MODE=true`. MEDIUM-risk items (hacks, politics, legal, accusations) still wait for you.
+1. **Run database migration.** (terminal: `npm run migrate`). The header changes from NOT SET UP to PAUSED.
+2. **Fetch news now**, then open the **News** tab and sanity-check scores and decisions. Tune `sources.reliability`, `min_confidence`, and `tracked_keywords` (Settings tab).
+3. Set the LLM variables in Vercel and redeploy. Create the X app, register the callback URL shown on the Setup tab, set `X_CLIENT_ID` / `X_CLIENT_SECRET`, redeploy.
+4. **Connect X account** (terminal: `npm run x:auth`). Confirm the page says the right `@handle`.
+5. **Dry run:** keep `DRY_RUN=true`, press **Resume**. The bot runs the whole pipeline and logs `WOULD POST` without calling X. Read the drafts and the rejected items in **Activity** for a day or two.
+6. Set `DRY_RUN=false` (Vercel variable, redeploy) with `AUTONOMOUS_MODE=false`. Send **ONE test post** from the Setup tab (terminal: `npm run x:test-post -- "text" --confirm`), then let items accumulate in **Approvals** and approve or edit them by hand for a while.
+7. Only when you trust it: `AUTONOMOUS_MODE=true`. MEDIUM-risk items (hacks, politics, legal, accusations) still wait for you.
 
-At any time: **Pause** in the dashboard (or set `bot_status` to `PAUSED`) stops all publishing.
+At any time: **Pause** in the dashboard stops all publishing.
 
 ---
 
@@ -357,30 +391,31 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 94 checks, pure logic, no DB
+npm run test:unit      # 99 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
-npm run test:engine    # 146 checks, the whole engine end to end
+npm run test:engine    # 172 checks, the whole engine end to end
 ```
 
 `test:limits` and `test:engine` start a throwaway embedded Postgres (no Docker). **Postgres refuses to run as root**, so run them as a normal user.
 
-`test:engine` runs the real engine against real Postgres, with a fake X HTTP server, a scripted LLM and fake feeds. It covers the pipeline, safety gate, approvals, daily limits, uncertain publishes and reconciliation, replies and their guards, scheduler and locking, token refresh and rotation (including concurrent callers), the real X client's response classification, and the dashboard over HTTP. The two most safety-critical behaviors (keeping the slot on an unknown outcome, forcing approval on MEDIUM risk) were checked by deliberately breaking them and confirming the suite fails.
+`test:engine` runs the real engine against real Postgres, with a fake X HTTP server, a scripted LLM and fake feeds. It covers the pipeline, safety gate, approvals, daily limits, uncertain publishes and reconciliation, replies and their guards, scheduler and locking, token refresh and rotation (including concurrent callers), the real X client's response classification, the dashboard over HTTP, and the browser-only setup (migration gate, X connect/callback with replay, expiry and wrong-account cases, the manual test post). The two most safety-critical behaviors (keeping the slot on an unknown outcome, forcing approval on MEDIUM risk) were checked by deliberately breaking them and confirming the suite fails.
 
 ---
 
 ## What is and isn't verified
 
-**Verified by the automated tests above:** all the logic described in this document, against a real Postgres and fakes. The production build (`npm run build`, then `node dist/src/worker.js`) was also started against a real database: it migrated, served the dashboard, and shut down cleanly on SIGTERM. The Vercel handlers were exercised locally with plain Node requests.
+**Verified by the automated tests above:** all the logic described in this document, against a real Postgres and fakes. The production build (`npm run build`, then `node dist/src/worker.js`) was also started against a real database: it migrated, served the dashboard, and shut down cleanly on SIGTERM. The compiled Vercel handlers were also driven by a real headless Chromium on a brand-new empty database: the Setup tab, the migration button, news collection, every tab, the hard-cap refusal in Settings, and the Connect X redirect, under the strict CSP with no console errors. That browser script was a one-off and is not part of `npm test`.
 
 **Not verified, so check before relying on it:**
 
 - **No real X, LLM, or feed traffic.** The X client follows the API shape as I know it: `POST /2/tweets`, OAuth 2.0 + PKCE at `/2/oauth2/token`, `offline.access` for the refresh token, mentions/timeline/search endpoints. I could confirm the token endpoint, the refresh parameters and the duplicate-content 403 from public sources, but **I could not reach X's own docs** (blocked in the build environment). Details such as exact response fields, rate limits, and **which X access tier and price your account needs for posting, reading mentions, and searching** are unconfirmed. Whether X rotates refresh tokens is also unconfirmed, so the code handles both cases (it stores a new refresh token if one is returned, and keeps the old one otherwise).
 - **Feed URLs are unchecked.** The 7 seeded RSS URLs are from memory. A dead feed is skipped without harming anything, but check them (`npm run collect`) and replace what is broken. Source reliability numbers are my judgement, not data.
-- **Not deployed to Vercel itself.** The handlers work locally; bundling and function limits on Vercel are untested.
+- **Not deployed to Vercel itself.** The handlers work locally; bundling (including that `sql/` is packaged with the dashboard function via `includeFiles`) and the exact environment variable names a Vercel database integration injects are unconfirmed. If the migration button reports that `sql/` was not found, tell me.
+- **The real X OAuth round trip is untested.** The connect and callback code is tested against a fake token endpoint, and the browser reached the correct x.com authorize URL, but nobody has completed a real authorization on X.
 - **Content quality is untested.** The scoring thresholds, prompts and persona were tuned against a handful of invented headlines. Expect to tune `min_confidence`, `professional_ratio` and the personality during the dry-run phase.
 - **Spend figures are estimates** computed from the price variables you set. They are not read from any billing API.
 - **No database outage was simulated.** By design, `runTick` skips when the DB health check fails and `reservePublishSlot` returns `DB_ERROR` (refusing to publish) on any database error, but I did not test either path by taking the database down.
-- **The interactive scripts are untested.** `npm run x:auth` (browser OAuth flow) and `npm run x:test-post` were typechecked but never run, since they need real X credentials. The pieces they use (PKCE, token exchange, token storage, the publisher) are covered by the tests.
+- **The optional CLI scripts** `npm run x:auth` and `npm run x:test-post` were typechecked but never run (they need real X credentials). Their dashboard equivalents use the same code and are tested.
 
 **Deliberately not built:** posting images/threads/quotes, likes/follows/DMs, editing or deleting published posts, per-user blocklists, multi-account support.
 
@@ -400,8 +435,8 @@ src/safety/                 rules.ts (pure checks), gate.ts (rules + DB + LLM ju
 src/x/                      types, oauth (PKCE + token endpoint), tokens (DB store, locked refresh), client
 src/services/               rateLimit.ts (slot gate, usage, budgets), events.ts (bot_events)
 src/engine/                 publisher, postEngine, replyEngine, ingest, reconcile, control, scheduler, tick, deps
-src/dashboard/              handler.ts (framework-free), html.ts
+src/dashboard/              handler.ts (framework-free), html.ts (Setup tab etc.), xconnect.ts (browser OAuth connect + callback)
 src/worker.ts               long-running mode      src/index.ts   CLI (status / tick / collect)
-api/tick.ts, api/dashboard.ts   Vercel functions
+api/tick.ts, api/dashboard.ts, api/x-connect.ts, api/x-callback.ts   Vercel functions
 scripts/                    x-auth, x-test-post, test-unit, test-limits, test-engine
 ```

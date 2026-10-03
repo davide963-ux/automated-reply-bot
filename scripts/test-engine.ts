@@ -35,8 +35,9 @@ async function main(): Promise<void> {
     tokenDelayMs: 0,
     tweetSeq: 9000,
     mentionsBody: undefined as unknown,
+    meName: 'testbot',
     reset() {
-      this.requests = []; this.tweetQueue = []; this.refreshCalls = 0; this.tokenMode = 'ok'; this.tokenDelayMs = 0; this.mentionsBody = undefined;
+      this.requests = []; this.tweetQueue = []; this.refreshCalls = 0; this.tokenMode = 'ok'; this.tokenDelayMs = 0; this.mentionsBody = undefined; this.meName = 'testbot';
     },
     count(method: string, path: string) {
       return this.requests.filter((r) => r.method === method && r.path === path).length;
@@ -64,7 +65,7 @@ async function main(): Promise<void> {
           if (h) return h(req, res);
           return json(res, 201, { data: { id: String(++xs.tweetSeq), text: 'ok' } });
         }
-        if (u.pathname === '/2/users/me') return json(res, 200, { data: { id: '42', username: 'testbot' } });
+        if (u.pathname === '/2/users/me') return json(res, 200, { data: { id: '42', username: xs.meName } });
         if (u.pathname === '/2/users/42/mentions') {
           return json(res, 200, xs.mentionsBody ?? { data: [{ id: '5001', text: '@testbot hello there friend', author_id: '7', conversation_id: '5001', created_at: new Date().toISOString() }], includes: { users: [{ id: '7', username: 'alice' }] } });
         }
@@ -110,6 +111,10 @@ async function main(): Promise<void> {
   const { XAuthError, XRateLimitError, XBudgetError } = require('../src/x/types') as typeof import('../src/x/types');
   const { LlmUnavailableError } = require('../src/llm/client') as typeof import('../src/llm/client');
   const { createDashboardHandler } = require('../src/dashboard/handler') as typeof import('../src/dashboard/handler');
+  const { handleXConnect, handleXCallback } = require('../src/dashboard/xconnect') as typeof import('../src/dashboard/xconnect');
+  const { migrationStatus, runMigrations: runMig } = require('../src/db/migrate') as typeof import('../src/db/migrate');
+  const { createManualPost } = require('../src/engine/control') as typeof import('../src/engine/control');
+  const { createHash } = require('crypto') as typeof import('crypto');
   const { reservePublishSlot } = require('../src/services/rateLimit') as typeof import('../src/services/rateLimit');
   type Deps = import('../src/engine/deps').Deps;
   type XApi = import('../src/x/types').XApi;
@@ -730,6 +735,100 @@ async function main(): Promise<void> {
   let granted = 0;
   for (let i = 0; i < 9; i++) if ((await reservePublishSlot(accountId, 'post')).ok) granted++;
   check('...and by the database: only 6 slots are ever granted', granted === 6, String(granted));
+
+
+  // ===========================================================================================
+  section('12. browser-only setup: migration gate, X connect/callback, manual test post');
+  await reset();
+  const setupDeps = mkDeps({ flags: { dryRun: false, autonomous: false } });
+  const setupSrv = createServer((req, res) => {
+    const path = new URL(req.url ?? '/', 'http://local').pathname;
+    if (path === '/api/x-connect') return void handleXConnect(req, res);
+    if (path === '/api/x-callback') return void handleXCallback(req, res);
+    return void createDashboardHandler(() => setupDeps)(req, res);
+  });
+  await new Promise<void>((r) => setupSrv.listen(0, '127.0.0.1', r));
+  const sb = `http://127.0.0.1:${(setupSrv.address() as AddressInfo).port}`;
+  const SH = { authorization: `Bearer ${DASH_TOKEN}` };
+  const sget = (r: string) => fetch(`${sb}/?r=${r}`, { headers: SH });
+  const spost = (r: string, body: unknown) => fetch(`${sb}/?r=${r}`, { method: 'POST', headers: { ...SH, 'content-type': 'application/json', 'x-dashboard': '1' }, body: JSON.stringify(body) });
+
+  // --- migration gate
+  const ms = await migrationStatus();
+  check('migrationStatus: up to date', ms.ready && ms.pending.length === 0 && ms.applied.length === 2, JSON.stringify(ms));
+  const migrated = (await (await spost('migrate', {})).json()) as { ok: boolean; applied: string[] };
+  check('migrate route is idempotent (nothing to apply)', migrated.ok && migrated.applied.length === 0);
+  await query('alter table schema_migrations rename to sm_bak');
+  const notReady = await migrationStatus();
+  check('migrationStatus: pending when the migrations table is missing', !notReady.ready && notReady.pending.length === 2);
+  const st0 = (await (await sget('status')).json()) as { schemaReady: boolean; pending: string[]; x: { redirectUri: string; clientIdSet: boolean } };
+  check('status works BEFORE the database is migrated (Setup tab can render)', st0.schemaReady === false && st0.pending.length === 2 && st0.x.clientIdSet === true && typeof st0.x.redirectUri === 'string');
+  check('every other API route refuses with a clear 409 until migrated', (await sget('queue')).status === 409 && (await spost('pause', {})).status === 409);
+  await query('alter table sm_bak rename to schema_migrations');
+  check('...and works again once migrated', (await sget('queue')).status === 200);
+  void runMig; // (a true fresh-database migration is exercised by the worker smoke run)
+
+  // --- X connect
+  const noAuth = await fetch(`${sb}/api/x-connect`, { redirect: 'manual' });
+  check('x-connect requires the dashboard password', noAuth.status === 401);
+  const conn = await fetch(`${sb}/api/x-connect`, { headers: SH, redirect: 'manual' });
+  const loc = new URL(conn.headers.get('location') ?? 'http://none');
+  const stateParam = loc.searchParams.get('state') ?? '';
+  check('x-connect redirects to X with PKCE S256 + state + offline.access', conn.status === 302 && loc.host === 'x.com' && loc.searchParams.get('code_challenge_method') === 'S256' && stateParam.length >= 16 && (loc.searchParams.get('scope') ?? '').includes('offline.access'));
+  check('state stored server-side', Number(await one(`select count(*)::text v from bot_state where key = $1`, [`x_oauth:${stateParam}`])) === 1);
+
+  const cb = (qs: string) => fetch(`${sb}/api/x-callback?${qs}`, { redirect: 'manual' });
+  check('callback with a made-up state -> 400, nothing saved', (await cb('code=abc&state=AAAAAAAAAAAAAAAAAAAAAA')).status === 400 && Number(await one('select count(*)::text v from x_tokens')) === 0);
+  check('callback without code -> 400', (await cb(`state=${stateParam}`)).status === 400);
+  check('callback with access_denied -> 400 page', (await cb('error=access_denied')).status === 400);
+  const okCb = await cb(`code=THE-CODE&state=${stateParam}`);
+  const okHtml = await okCb.text();
+  check('valid callback -> 200 "Connected as @testbot"', okCb.status === 200 && okHtml.includes('Connected as @testbot'), okHtml.slice(0, 200));
+  const tokenReq = xs.requests.filter((r) => r.path === '/2/oauth2/token').pop()!;
+  const tb = new URLSearchParams(tokenReq.body);
+  check('code exchanged with the PKCE verifier that matches the challenge sent to X',
+    tb.get('code') === 'THE-CODE' && tb.get('grant_type') === 'authorization_code' &&
+    createHash('sha256').update(tb.get('code_verifier') ?? '').digest('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') === loc.searchParams.get('code_challenge'));
+  check('tokens saved (encrypted) and the X identity stored', (await one<string>('select access_token v from x_tokens'))!.startsWith('enc:v1:') && (await one<string>('select x_user_id v from accounts where id = $1', [accountId])) === '42');
+  check('state is single-use: replaying the callback -> 400', (await cb(`code=THE-CODE&state=${stateParam}`)).status === 400);
+  const status2 = (await (await sget('status')).json()) as { x: { connected: boolean } };
+  check('status now shows X connected', status2.x.connected === true);
+
+  // expired state
+  const conn2 = await fetch(`${sb}/api/x-connect`, { headers: SH, redirect: 'manual' });
+  const st2 = new URL(conn2.headers.get('location')!).searchParams.get('state')!;
+  await query(`update bot_state set updated_at = now() - interval '11 minutes' where key = $1`, [`x_oauth:${st2}`]);
+  check('expired state (older than 10 min) -> 400', (await cb(`code=X&state=${st2}`)).status === 400);
+  // wrong account
+  await query('delete from x_tokens');
+  await query('update accounts set x_user_id = null');
+  const conn3 = await fetch(`${sb}/api/x-connect`, { headers: SH, redirect: 'manual' });
+  const st3 = new URL(conn3.headers.get('location')!).searchParams.get('state')!;
+  xs.meName = 'someoneelse';
+  const wrong = await cb(`code=X&state=${st3}`);
+  check('authorizing the WRONG X account -> 409 and the tokens are discarded', wrong.status === 409 && Number(await one('select count(*)::text v from x_tokens')) === 0 && (await one<string | null>('select x_user_id v from accounts where id = $1', [accountId])) === null);
+  xs.meName = 'testbot';
+  // XSS: attacker-controlled error text is escaped
+  const xss = await (await cb('error=%3Cscript%3Ealert(1)%3C%2Fscript%3E')).text();
+  check('callback page escapes attacker-controlled input', !xss.includes('<script>alert') && xss.includes('&lt;script&gt;'));
+
+  // --- manual test post
+  const dryTest = await createManualPost(mkDeps({ flags: { dryRun: true, autonomous: true } }), 'gm from my test');
+  check('test post in DRY_RUN: validated, nothing sent', dryTest.ok && !dryTest.sent && fx.posts.length === 0);
+  const spammy = await createManualPost(setupDeps, 'Free crypto giveaway, DM me!');
+  check('test post: spam text refused', !spammy.ok);
+  const paused = await (async () => { await writeSetting('bot_status', 'PAUSED'); return createManualPost(setupDeps, 'hello from the test post one'); })();
+  check('test post while PAUSED: blocked by the DB gate', paused.ok && paused.sent && paused.publish.status === 'BLOCKED' && fx.posts.length === 0);
+  await writeSetting('bot_status', 'RUNNING');
+  const sent = await spost('testpost', { text: 'hello from the test post two' });
+  const sentBody = (await sent.json()) as { ok: boolean; publish?: { status: string } };
+  check('test post via the dashboard: published', sent.status === 200 && sentBody.publish?.status === 'PUBLISHED' && fx.posts.length === 1);
+  check('same test post twice is refused', (await spost('testpost', { text: 'hello from the test post two' })).status === 400);
+  // --- collect route
+  feeds['https://feeds.test/coindesk'] = feedXml('coindesk', [[STORIES[0]![0], STORIES[0]![1], 1]]);
+  const col = (await (await spost('collect', {})).json()) as { newItems: number; eligible: number };
+  check('collect route (dashboard button) fetches and scores news', col.newItems === 1 && col.eligible === 1, JSON.stringify(col));
+  setupSrv.close();
 
   console.log('\n(shutting down embedded Postgres)');
   xServer.close();

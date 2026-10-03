@@ -1,6 +1,7 @@
 import { query } from '../db/client';
 import { loadSettings, writeSetting } from '../config/settings';
-import { contentHash } from '../lib/text';
+import { contentHash, sha256 } from '../lib/text';
+import { checkAdvice, checkLength, checkSpam } from '../safety/rules';
 import { loadRecentTexts, runSafetyGate } from '../safety/gate';
 import { logEvent } from '../services/events';
 import type { PublishKind } from '../services/rateLimit';
@@ -114,4 +115,32 @@ export async function publishApprovedQueue(deps: Deps): Promise<number> {
     }
   }
   return published;
+}
+
+export type ManualPostResult =
+  | { ok: true; sent: false; note: string }
+  | { ok: true; sent: true; publish: PublishResult }
+  | { ok: false; error: string };
+
+/**
+ * The ONE manual test post. Same publisher as the bot, so it respects DRY_RUN,
+ * the PAUSED/RUNNING switch, the daily limits and duplicate protection.
+ * Only the cheap deterministic checks run (no LLM needed).
+ */
+export async function createManualPost(deps: Deps, text: string): Promise<ManualPostResult> {
+  const t = text.trim();
+  if (!t) return { ok: false, error: 'empty text' };
+  for (const [name, r] of [['length', checkLength(t)], ['spam', checkSpam(t, 'post')], ['advice', checkAdvice(t)]] as const) {
+    if (!r.ok) return { ok: false, error: `${name} check failed: ${r.detail}` };
+  }
+  if (deps.flags.dryRun) return { ok: true, sent: false, note: 'DRY_RUN=true: text is valid, nothing was sent. Set DRY_RUN=false to post for real.' };
+
+  const ins = await query<{ id: string }>(
+    `insert into posts (account_id, content, content_type, content_hash, idempotency_key, status)
+     values ($1,$2,'flexible',$3,$4,'DRAFT') on conflict (idempotency_key) do nothing returning id`,
+    [deps.accountId, t, contentHash(t), sha256(`${deps.accountId}|manual|${t}`)],
+  );
+  const id = ins.rows[0]?.id;
+  if (!id) return { ok: false, error: 'this exact test post was already created before' };
+  return { ok: true, sent: true, publish: await publishRow(deps, 'post', id) };
 }

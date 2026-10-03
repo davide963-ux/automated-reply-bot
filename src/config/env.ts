@@ -34,7 +34,11 @@ const schema = z.object({
   MAX_X_DAILY_SPEND: num(5, 0, 100000),
   MAX_LLM_DAILY_SPEND: num(5, 0, 100000),
 
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // Vercel's database integrations may provide POSTGRES_URL instead of DATABASE_URL.
+  DATABASE_URL: z.preprocess(
+    (v) => emptyToUndef(v) ?? emptyToUndef(process.env.POSTGRES_URL),
+    z.string().min(1, 'DATABASE_URL is required (or POSTGRES_URL)'),
+  ),
   DATABASE_SSL: flag(false),
   DB_POOL_MAX: num(10, 1, 50),
 
@@ -42,7 +46,15 @@ const schema = z.object({
   X_CLIENT_SECRET: optStr,
   X_ACCESS_TOKEN: optStr,
   X_REFRESH_TOKEN: optStr,
-  X_REDIRECT_URI: z.preprocess(emptyToUndef, z.string().url().default('http://127.0.0.1:3000/callback')),
+  X_REDIRECT_URI: z.preprocess(
+    emptyToUndef,
+    z.string().url().default(
+      // On Vercel, VERCEL_PROJECT_PRODUCTION_URL is the production host (no scheme).
+      process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/x-callback`
+        : 'http://127.0.0.1:3000/callback',
+    ),
+  ),
   X_API_BASE: z.preprocess(emptyToUndef, z.string().url().default('https://api.x.com')),
   X_COST_PER_READ: num(0.005, 0, 10),
   X_COST_PER_WRITE: num(0.01, 0, 10),
