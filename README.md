@@ -373,6 +373,7 @@ Overview (usage vs limits, spend vs caps, X/LLM health, job schedule), Approvals
 | Dashboard says "Cannot reach the database" / "rejected the login" / "SSL problem" | The message tells you which: check `DATABASE_URL` and `DATABASE_SSL`. Managed Postgres usually needs `DATABASE_SSL=true` |
 | Dashboard says "dashboard disabled" (503) | `DASHBOARD_TOKEN` is not set (16+ characters) |
 | Vercel's own `500 FUNCTION_INVOCATION_FAILED` page | Should no longer happen for configuration problems (see above). If it still does, open the deployment's *Logs* tab in Vercel and send me the first error line |
+| "0 eligible" after fetching news | Real headlines score lower than hand-picked ones. Open the **News** tab: each story shows its confidence and the reason it was ignored. The default `min_confidence` is 0.6 (0.7 let through only about 1 in 4 realistic headlines). Lowering it in Settings re-scores stories that were already collected on the next fetch; stories ignored as too old, expired, or skipped by the model stay ignored |
 | Nothing posts | Bot is PAUSED, `DRY_RUN=true`, outside `active_hours`, `next_post_not_before` not reached, no news at or above `min_confidence`, or the daily budget (including queued items) is used. The Activity tab says which |
 | Everything waits in Approvals | `AUTONOMOUS_MODE=false`, or the items are MEDIUM risk |
 | Bot paused itself | See the `BOT_PAUSED` event: X returned 401, or the authorized account does not match `X_ACCOUNT_HANDLE` |
@@ -395,9 +396,9 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 128 checks, pure logic, no DB
+npm run test:unit      # 134 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
-npm run test:engine    # 172 checks, the whole engine end to end
+npm run test:engine    # 179 checks, the whole engine end to end
 ```
 
 `test:limits` and `test:engine` start a throwaway embedded Postgres (no Docker). **Postgres refuses to run as root**, so run them as a normal user.

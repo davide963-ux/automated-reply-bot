@@ -87,6 +87,14 @@ async function main(): Promise<void> {
   check('confirmation: same domain does not count', !S.isConfirmation(
     { title: 'SEC approves spot Ethereum ETF with record inflows', url: 'https://a.com/1' },
     { title: 'Spot Ethereum ETF approved by SEC, record inflows reported', url: 'https://www.a.com/2' }));
+  // Calibration on realistic (not hand-crafted) headlines: the default threshold must keep good news and reject fluff.
+  const realistic = (t: string, d: string, rel: number) => S.decideNews(S.scoreNews(mk(t, d, 2, rel), ctx), { minConfidence: 0.6, confirmations: 1 }).decision;
+  check('realistic: earnings story passes at the 0.6 default', realistic('Coinbase Reports Third-Quarter Earnings Above Expectations', 'Coinbase posted higher trading revenue than analysts expected.', 0.85) === 'POST');
+  check('realistic: treasury purchase passes', realistic('Strategy Buys Another 5,000 Bitcoin for $500 Million', 'The company disclosed the purchase in a filing.', 0.85) === 'POST');
+  check('realistic: ETF delay passes', realistic('SEC Delays Decision on Spot XRP ETF Applications', 'The SEC pushed back its deadline on several XRP ETF filings.', 0.85) === 'POST');
+  check('realistic: opinion piece is rejected', realistic('Why Stablecoin Regulation Matters for Banks, Says Analyst', 'An opinion piece on the stablecoin bill.', 0.75) === 'IGNORE');
+  check('realistic: memoir excerpt is rejected', realistic('Binance Founder Releases Memoir Excerpt', 'A short excerpt was published.', 0.75) === 'IGNORE');
+  check('realistic: off-topic prediction-market item is rejected', realistic('Polymarket Odds Show Traders Expect Rate Cut', 'Prediction market pricing points to a cut.', 0.8) === 'IGNORE');
   check('topic classification', S.classifyTopic('Hackers drain $20 million from DeFi protocol') === 'security');
   // Regressions found while calibrating against realistic headlines:
   check('topic: "billion" is not the word "bill" (regulation)', S.classifyTopic('Tether reserves hit $90 billion as stablecoin supply grows') === 'stablecoins');

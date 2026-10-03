@@ -125,6 +125,14 @@ async function main(): Promise<void> {
   await runMigrations();
   const accountId = await ensureAccount();
 
+  section('0. migration 003 (default min_confidence)');
+  const mc = async () => Number(await query<{ v: string }>(`select value #>> '{}' as v from settings where key = 'min_confidence'`).then((r) => r.rows[0]?.v));
+  check('an untouched default of 0.7 is lowered to 0.6', (await mc()) === 0.6, String(await mc()));
+  await writeSetting('min_confidence', 0.75);
+  await query(`delete from schema_migrations where filename = '003_tune_min_confidence.sql'`);
+  await runMigrations();
+  check('a value you chose yourself (0.75) is NEVER overwritten by re-running it', (await mc()) === 0.75, String(await mc()));
+
   // ------------------------------------------------------------------------------------------
   // In-memory fakes for the engine (X API object, LLM, feeds)
   // ------------------------------------------------------------------------------------------
@@ -280,6 +288,16 @@ async function main(): Promise<void> {
   check('an unreachable source counts as failed, not fatal', c4.sourcesFailed === 1 && c4.sourcesOk === 2, JSON.stringify(c4));
   const pausedRun = await runPost();
   check('PAUSED: post engine idle, ZERO LLM calls', pausedRun.outcome === 'idle' && Object.keys(llm.calls).length === 0);
+  check('collect reports each source (name, items, new)', c1.sources.length === 3 && c1.sources.find((x) => x.name === 'CoinDesk')?.items === 4 && c1.sources.every((x) => x.error === undefined), JSON.stringify(c1.sources));
+  check('a failed source is reported with its reason', c4.sources.some((x) => x.error !== undefined && x.items === 0), JSON.stringify(c4.sources));
+  // Changing min_confidence must take effect on stories that were ALREADY collected and ignored for their score.
+  await writeSetting('min_confidence', 0.99);
+  await collect();
+  check('min_confidence 0.99: the big story is now IGNORED for its score', (await dec('SEC approves spot Ethereum%')) === 'IGNORE' && /^confidence /.test((await one<string>('select decision_reason v from news_items where title like $1', ['SEC approves spot Ethereum%'])) ?? ''));
+  await writeSetting('min_confidence', 0.7);
+  const rescored = await collect();
+  check('lowering it again RE-SCORES the ignored story back to POST (no new fetch needed)', (await dec('SEC approves spot Ethereum%')) === 'POST' && rescored.newItems === 0);
+  check('final reasons stay final: the stale story is not revived', (await dec('SEC approves spot Solana%')) === 'IGNORE' && (await one<string>('select decision_reason v from news_items where title like $1', ['SEC approves spot Solana%'])) !== null);
 
   // ===========================================================================================
   section('2. DRY_RUN: full pipeline, nothing sent, no slot consumed');
@@ -755,14 +773,14 @@ async function main(): Promise<void> {
 
   // --- migration gate
   const ms = await migrationStatus();
-  check('migrationStatus: up to date', ms.ready && ms.pending.length === 0 && ms.applied.length === 2, JSON.stringify(ms));
+  check('migrationStatus: up to date', ms.ready && ms.pending.length === 0 && ms.applied.length === 3, JSON.stringify(ms));
   const migrated = (await (await spost('migrate', {})).json()) as { ok: boolean; applied: string[] };
   check('migrate route is idempotent (nothing to apply)', migrated.ok && migrated.applied.length === 0);
   await query('alter table schema_migrations rename to sm_bak');
   const notReady = await migrationStatus();
-  check('migrationStatus: pending when the migrations table is missing', !notReady.ready && notReady.pending.length === 2);
+  check('migrationStatus: pending when the migrations table is missing', !notReady.ready && notReady.pending.length === 3);
   const st0 = (await (await sget('status')).json()) as { schemaReady: boolean; pending: string[]; x: { redirectUri: string; clientIdSet: boolean } };
-  check('status works BEFORE the database is migrated (Setup tab can render)', st0.schemaReady === false && st0.pending.length === 2 && st0.x.clientIdSet === true && typeof st0.x.redirectUri === 'string');
+  check('status works BEFORE the database is migrated (Setup tab can render)', st0.schemaReady === false && st0.pending.length === 3 && st0.x.clientIdSet === true && typeof st0.x.redirectUri === 'string');
   check('every other API route refuses with a clear 409 until migrated', (await sget('queue')).status === 409 && (await spost('pause', {})).status === 409);
   await query('alter table sm_bak rename to schema_migrations');
   check('...and works again once migrated', (await sget('queue')).status === 200);

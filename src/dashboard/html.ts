@@ -45,6 +45,7 @@ const bar = (n, max) => el('div', { className: 'bar' }, el('i', { style: 'width:
 const fmt = (d) => d ? new Date(d).toLocaleString() : '';
 const TABS = ['Setup', 'Overview', 'Approvals', 'Activity', 'News', 'Posts', 'Replies', 'Settings'];
 let tab = 'Overview';
+let lastCollect = null;
 TABS.forEach((t) => $('#tabs').append(el('button', { textContent: t, onclick: () => show(t) })));
 
 async function header() {
@@ -76,7 +77,12 @@ const views = {
         el('button', { className: ready ? '' : 'ok', textContent: ready ? 'Re-check' : 'Run database migration', onclick: act(async () => { const r = await api('migrate', {}); toast(r.applied.length ? 'applied: ' + r.applied.join(', ') : 'already up to date'); }) })),
       ...(!ready ? [] : [
         step(false, '2. Fetch news (no X or LLM needed)', 'Reads the news feeds and scores each story. Check the News tab afterwards.',
-          el('button', { textContent: 'Fetch news now', onclick: act(async () => { const r = await api('collect', {}); toast(r.newItems + ' new, ' + r.eligible + ' eligible, ' + r.sourcesFailed + ' source(s) failed'); }) })),
+          el('button', { textContent: 'Fetch news now', onclick: act(async () => { const r = await api('collect', {}); lastCollect = r; toast(r.newItems + ' new, ' + r.eligible + ' eligible, ' + r.sourcesFailed + ' source(s) failed'); }) })),
+        ...(lastCollect ? [el('div', { className: 'card' }, el('b', {}, 'Last fetch, per source'), el('table', {}, lastCollect.sources.map((x) => el('tr', {},
+          el('td', {}, x.name),
+          el('td', { className: x.error ? 'ERROR' : (x.items === 0 ? 'MEDIUM' : 'RUNNING') }, x.error ? 'FAILED' : (x.items === 0 ? '0 items' : x.items + ' items')),
+          el('td', { className: 'mut' }, x.error || (x.items === 0 ? 'feed answered but was empty or blocked: check its URL in the sources table' : x.newItems + ' new')))))),
+          el('div', { className: 'mut' }, lastCollect.eligible + ' of the stories are eligible to post (confidence at or above min_confidence). See the News tab for each score and reason.'))] : []),
       ]),
       step(s.llm.configured, ready ? '3. LLM' : '2. LLM', s.llm.configured ? 'Provider, key and model are set.' : 'Set LLM_PROVIDER (anthropic or openai), LLM_API_KEY and LLM_MODEL in the Vercel environment variables, then redeploy.'),
       step(s.x.clientIdSet, ready ? '4. X developer app' : '3. X developer app', s.x.clientIdSet ? 'X_CLIENT_ID is set.' : 'Create an app in the X developer portal, turn on OAuth 2.0 with read and write, set X_CLIENT_ID (and X_CLIENT_SECRET) in Vercel, redeploy.',

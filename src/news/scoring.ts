@@ -49,7 +49,9 @@ const HIGH_IMPACT = [
   /\bexploit(?:ed|s)?\b/, /\bstol(?:e|en)\b/, /\bdrain(?:ed|s)?\b/, /\bbankrupt/, /\bhalving\b/, /\ball-time high\b/, /\brecord\b/,
   /\blist(?:s|ing|ed)\b/, /\bdelist/, /\bmainnet\b/, /\bupgrade\b/, /\bhard fork\b/, /\blaunch(?:es|ed)?\b/,
   /\bacquir/, /\bpartnership\b/, /\bregulat/, /\bban(?:s|ned)?\b/, /\binterest rate/, /\brate cut/, /\bliquidat/,
-  /\boutflows?\b/, /\binflows?\b/, /\btreasury\b/, /\breserve\b/, /\bfreez(?:e|es|ing)\b/, /\bseiz/,
+  /\bearnings\b/, /\bbuys?\b/, /\bpurchas(?:e|es|ed)\b/, /\bmints?\b/, /\bburns?\b/, /\bfiles?\b/, /\bfiling\b/, /\bdelays?\b/,
+  /\bfunding\b/, /\bfundrais/,
+    /\boutflows?\b/, /\binflows?\b/, /\btreasury\b/, /\breserve\b/, /\bfreez(?:e|es|ing)\b/, /\bseiz/,
 ];
 
 const LOW_VALUE = [
