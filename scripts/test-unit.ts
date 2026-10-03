@@ -329,6 +329,15 @@ async function main(): Promise<void> {
   check('dashboard page (no sql/) still serves the login prompt', bd.status === 401, JSON.stringify(bd));
   rmTmp(bundle, { recursive: true, force: true });
 
+  section('plain-language hints for X refusals');
+  const { describeXRejection } = require('../src/x/client') as typeof import('../src/x/client');
+  const credits = describeXRejection(402, '{"detail":"credits depleted","status":402,"title":"Payment Required","type":"https://api.x.com/2/problems/credits-depleted"}') ?? '';
+  check('402 credits depleted (the owner\'s real error) says to buy credits', /credits/i.test(credits) && /Buy Credits/.test(credits));
+  check('401 says to reconnect', /reconnect/i.test(describeXRejection(401, '') ?? ''));
+  check('429 says the bot backs off', /back/i.test(describeXRejection(429, '') ?? ''));
+  check('403 duplicate vs other 403 are told apart', /duplicate/i.test(describeXRejection(403, 'duplicate content') ?? '') && /Read and write/.test(describeXRejection(403, 'forbidden') ?? ''));
+  check('unknown statuses get no invented advice', describeXRejection(418, 'teapot') === undefined);
+
   section('Vercel deploy config');
   const fs = require('fs') as typeof import('fs');
   const vj = JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as { outputDirectory?: string; buildCommand?: string; functions?: Record<string, { includeFiles?: string }>; crons?: Array<{ path: string; schedule: string }> };

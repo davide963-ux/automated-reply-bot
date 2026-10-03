@@ -423,9 +423,9 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 170 checks, pure logic, no DB
+npm run test:unit      # 175 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
-npm run test:engine    # 201 checks, the whole engine end to end
+npm run test:engine    # 202 checks, the whole engine end to end
 ```
 
 `test:limits` and `test:engine` start a throwaway embedded Postgres (no Docker). **Postgres refuses to run as root**, so run them as a normal user.

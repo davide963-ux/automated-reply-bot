@@ -43,6 +43,19 @@ function toTweets(json: unknown): XTweet[] {
 }
 
 /**
+ * Plain-language hint appended to X's own error text. Only statuses with an unambiguous meaning get a firm
+ * statement; 403 has several causes, so it lists the usual ones. X's raw text is always kept alongside.
+ */
+export function describeXRejection(status: number, raw: string): string | undefined {
+  if (status === 402 || /credits[- ]depleted/i.test(raw)) return 'Out of X API credits: buy credits in the X Developer Console (Dashboard, Buy Credits).';
+  if (status === 401) return 'X rejected the login: reconnect the X account (Setup, Connect X account).';
+  if (status === 429) return 'Rate limited by X: the bot backs off and tries again later.';
+  if (status === 403 && /duplicate/i.test(raw)) return 'X refuses duplicate text: change the wording.';
+  if (status === 403) return 'X refused the request. Usual causes: the app lacks write permission (set Read and write, then Connect again), no credits, or the app may not post.';
+  return undefined;
+}
+
+/**
  * X API v2 client (OAuth 2.0 user context).
  *  - reads honour the daily X budget and the persisted rate-limit backoff
  *  - every request is counted in daily_usage
@@ -199,7 +212,7 @@ export function createXClient(accountId: string): XApi {
         return {
           kind: 'rejected',
           status: res.status,
-          reason: `HTTP ${res.status}: ${raw.slice(0, 300)}`,
+          reason: `HTTP ${res.status}: ${raw.slice(0, 300)}${describeXRejection(res.status, raw) ? ` | ${describeXRejection(res.status, raw)}` : ''}`,
           duplicate,
           authFailure: res.status === 401,
         };

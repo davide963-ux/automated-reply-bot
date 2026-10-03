@@ -706,6 +706,9 @@ async function main(): Promise<void> {
   xs.tweetQueue.push((_q, r) => json(r, 403, { detail: 'You are not allowed to create a Tweet with duplicate content.' }));
   const dupOut = await xc.createPost('dup');
   check('403 duplicate -> rejected(duplicate)', dupOut.kind === 'rejected' && dupOut.duplicate);
+  xs.tweetQueue.push((_q, r) => json(r, 402, { detail: 'credits depleted', status: 402, title: 'Payment Required', type: 'https://api.x.com/2/problems/credits-depleted' }));
+  const noCredit = await xc.createPost('no credit');
+  check('402 credits depleted -> rejected (nothing created), with X\'s text AND a plain-language hint', noCredit.kind === 'rejected' && noCredit.status === 402 && /credits depleted/.test(noCredit.reason) && /Buy Credits/.test(noCredit.reason), JSON.stringify(noCredit));
   xs.tweetQueue.push((_q, r) => json(r, 400, { detail: 'bad' }));
   check('400 -> rejected', (await xc.createPost('x')).kind === 'rejected');
   xs.tweetQueue.push((_q, r) => json(r, 500, { detail: 'oops' }));

@@ -39,7 +39,7 @@ async function api(route, body, extra) {
   if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
   return data;
 }
-function toast(t, bad) { const m = $('#msg'); m.hidden = false; m.textContent = t; m.style.borderColor = bad ? 'var(--bad)' : 'var(--ok)'; setTimeout(() => m.hidden = true, 5000); }
+function toast(t, bad) { const m = $('#msg'); m.hidden = false; m.textContent = t; m.style.borderColor = bad ? 'var(--bad)' : 'var(--ok)'; clearTimeout(window.__toastTimer); window.__toastTimer = setTimeout(() => m.hidden = true, bad ? 20000 : 5000); }
 const act = (fn) => async () => { try { await fn(); await show(tab); } catch (e) { toast(e.message, true); } };
 const bar = (n, max) => el('div', { className: 'bar' }, el('i', { style: 'width:' + Math.min(100, max ? n / max * 100 : 0) + '%' }));
 const fmt = (d) => d ? new Date(d).toLocaleString() : '';
@@ -96,7 +96,7 @@ const views = {
         el('a', { className: 'btn', href: '/api/x-connect', textContent: s.x.connected ? 'Reconnect' : 'Connect X account' })),
       ...(!ready ? [] : [
         step(false, '6. Optional: send ONE test post', s.flags.dryRun ? 'DRY_RUN is on, so this only validates the text.' : 'This posts for real (needs Resume pressed and X connected).',
-          el('button', { textContent: 'Send test post', onclick: act(async () => { const r = await api('testpost', { text: testText.value }); toast(r.note || ('result: ' + (r.publish ? r.publish.status : JSON.stringify(r)))); }) })),
+          el('button', { textContent: 'Send test post', onclick: act(async () => { const r = await api('testpost', { text: testText.value }); toast(r.note || ('result: ' + (r.publish ? r.publish.status + (r.publish.reason ? ': ' + r.publish.reason : '') : JSON.stringify(r))), !!(r.publish && r.publish.status !== 'PUBLISHED')); }) })),
         el('div', { className: 'card' }, testText),
         step(s.botStatus === 'RUNNING', '7. Resume the bot', 'Press Resume (top right). With DRY_RUN on it only logs what it WOULD post. Watch the Activity tab for a day before turning DRY_RUN off.'),
       ]),
@@ -127,7 +127,7 @@ const views = {
         it.parent_text ? el('div', { className: 'mut' }, 'Replying to: ', it.parent_text) : '',
         ta, el('pre', { className: 'mut' }, (it.safety_report && it.safety_report.reason || '') + '\\n' + checks),
         el('div', { className: 'row' },
-          el('button', { className: 'ok', textContent: 'Approve & publish', onclick: act(async () => { const r = await api('approve', { kind: it.kind, id: it.id, text: ta.value }); toast('approve: ' + (r.publish ? r.publish.status : '')); }) }),
+          el('button', { className: 'ok', textContent: 'Approve & publish', onclick: act(async () => { const r = await api('approve', { kind: it.kind, id: it.id, text: ta.value }); toast('approve: ' + (r.publish ? r.publish.status + (r.publish.reason ? ': ' + r.publish.reason : '') : ''), !!(r.publish && !['PUBLISHED', 'DRY_RUN', 'PENDING_APPROVAL'].includes(r.publish.status))); }) }),
           el('button', { className: 'bad', textContent: 'Reject', onclick: act(() => api('reject', { kind: it.kind, id: it.id })) })));
     });
   },
