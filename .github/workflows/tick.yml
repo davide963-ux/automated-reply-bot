@@ -1,0 +1,22 @@
+# Free scheduler for Vercel Hobby (Hobby cron jobs run at most once a day).
+# Enable it by setting the repository VARIABLE  TICK_URL  = https://<your-app>.vercel.app/api/tick
+# and the repository SECRET  CRON_SECRET  (same value as the Vercel env var).
+# GitHub may delay scheduled runs by a few minutes; the bot's gates make that harmless.
+name: tick
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+jobs:
+  tick:
+    if: ${{ vars.TICK_URL != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Call /api/tick
+        env:
+          TICK_URL: ${{ vars.TICK_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          curl --fail --silent --show-error --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" "${TICK_URL}"

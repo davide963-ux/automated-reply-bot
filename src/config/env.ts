@@ -34,19 +34,53 @@ const schema = z.object({
   MAX_X_DAILY_SPEND: num(5, 0, 100000),
   MAX_LLM_DAILY_SPEND: num(5, 0, 100000),
 
-  DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
+  // Vercel's database integrations may provide POSTGRES_URL instead of DATABASE_URL.
+  DATABASE_URL: z.preprocess(
+    (v) => emptyToUndef(v) ?? emptyToUndef(process.env.POSTGRES_URL),
+    z.string().min(1, 'DATABASE_URL is required (or POSTGRES_URL)'),
+  ),
   DATABASE_SSL: flag(false),
+  DB_POOL_MAX: num(10, 1, 50),
 
   X_CLIENT_ID: optStr,
   X_CLIENT_SECRET: optStr,
   X_ACCESS_TOKEN: optStr,
   X_REFRESH_TOKEN: optStr,
+  X_REDIRECT_URI: z.preprocess(
+    emptyToUndef,
+    z.string().url().default(
+      // On Vercel, VERCEL_PROJECT_PRODUCTION_URL is the production host (no scheme).
+      process.env.VERCEL_PROJECT_PRODUCTION_URL
+        ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}/api/x-callback`
+        : 'http://127.0.0.1:3000/callback',
+    ),
+  ),
+  X_API_BASE: z.preprocess(emptyToUndef, z.string().url().default('https://api.x.com')),
+  X_COST_PER_READ: num(0.005, 0, 10),
+  X_COST_PER_WRITE: num(0.01, 0, 10),
+  TOKEN_ENCRYPTION_KEY: optStr,
 
   LLM_PROVIDER: optStr,
   LLM_API_KEY: optStr,
   LLM_MODEL: optStr,
+  LLM_BASE_URL: optStr,
+  LLM_PRICE_IN_PER_MTOK: num(3, 0, 1000),
+  LLM_PRICE_OUT_PER_MTOK: num(15, 0, 1000),
 
   NEWS_API_KEY: optStr,
+
+  // Runtime
+  TICK_INTERVAL_SECONDS: num(60, 10, 3600),
+  PORT: num(3000, 1, 65535),
+  AUTO_MIGRATE: flag(false),
+  DASHBOARD_TOKEN: z.preprocess(
+    emptyToUndef,
+    z.string().min(16, 'DASHBOARD_TOKEN must be at least 16 characters').optional(),
+  ),
+  CRON_SECRET: z.preprocess(
+    emptyToUndef,
+    z.string().min(16, 'CRON_SECRET must be at least 16 characters').optional(),
+  ),
 });
 
 function isValidTimezone(tz: string): boolean {
@@ -82,15 +116,34 @@ function load() {
       maxTotalPerDay: e.MAX_TOTAL_PER_DAY,
     },
     budget: { maxXDailySpend: e.MAX_X_DAILY_SPEND, maxLlmDailySpend: e.MAX_LLM_DAILY_SPEND },
-    db: { url: e.DATABASE_URL, ssl: e.DATABASE_SSL },
+    db: { url: e.DATABASE_URL, ssl: e.DATABASE_SSL, poolMax: e.DB_POOL_MAX },
     x: {
       clientId: e.X_CLIENT_ID,
       clientSecret: e.X_CLIENT_SECRET,
       accessToken: e.X_ACCESS_TOKEN,
       refreshToken: e.X_REFRESH_TOKEN,
+      redirectUri: e.X_REDIRECT_URI,
+      apiBase: e.X_API_BASE.replace(/\/+$/, ''),
+      costPerRead: e.X_COST_PER_READ,
+      costPerWrite: e.X_COST_PER_WRITE,
+      tokenEncryptionKey: e.TOKEN_ENCRYPTION_KEY,
     },
-    llm: { provider: e.LLM_PROVIDER, apiKey: e.LLM_API_KEY, model: e.LLM_MODEL },
+    llm: {
+      provider: e.LLM_PROVIDER,
+      apiKey: e.LLM_API_KEY,
+      model: e.LLM_MODEL,
+      baseUrl: e.LLM_BASE_URL,
+      priceInPerMTok: e.LLM_PRICE_IN_PER_MTOK,
+      priceOutPerMTok: e.LLM_PRICE_OUT_PER_MTOK,
+    },
     news: { apiKey: e.NEWS_API_KEY },
+    runtime: {
+      tickIntervalSeconds: e.TICK_INTERVAL_SECONDS,
+      port: e.PORT,
+      autoMigrate: e.AUTO_MIGRATE,
+      dashboardToken: e.DASHBOARD_TOKEN,
+      cronSecret: e.CRON_SECRET,
+    },
   } as const;
 }
 
