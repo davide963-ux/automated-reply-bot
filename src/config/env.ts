@@ -84,7 +84,7 @@ const schema = z.object({
   ),
   X_API_BASE: z.preprocess(emptyToUndef, z.string().url().default('https://api.x.com')),
   X_COST_PER_READ: num(0.005, 0, 10),
-  X_COST_PER_WRITE: num(0.01, 0, 10),
+  X_COST_PER_WRITE: num(0.015, 0, 10),
   TOKEN_ENCRYPTION_KEY: optStr,
 
   LLM_PROVIDER: optStr,

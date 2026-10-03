@@ -355,6 +355,20 @@ Hobby function duration is up to 300 s according to Vercel's docs, which is plen
 
 ---
 
+## Creating the X developer app
+
+(From public sources; X's own docs were not reachable when this was written, so labels in the console may differ slightly.)
+
+1. Log in to X as the account that will own the app (it can be the bot account itself) and open the developer console at `console.x.com`. Accept the developer terms if asked.
+2. **Billing:** X moved to pay-per-use in 2026 and, per public sources, has no free tier that can post. Buy a small credit balance. Published rates: about $0.015 per post created, **$0.20 for a post that contains a link** (keep `include_source_link` off), $0.005 per post read, $0.001 per read of your own data. At the daily caps that is very roughly 25 to 50 cents a day.
+3. **Create App**: name, description, use case.
+4. In the app's **User authentication settings**: permissions **Read and write**, app type **Web App, Automated App or Bot** (a confidential client, which has a secret), **Callback URI** = the URL shown on the dashboard's Setup tab (`https://<your-domain>/api/x-callback`, must match exactly), website URL = your site.
+5. Copy the **Client ID** and **Client Secret**. The secret is shown once.
+6. In Vercel set `X_CLIENT_ID`, `X_CLIENT_SECRET` (Sensitive), `X_ACCOUNT_HANDLE` (the bot's handle, no `@`), then redeploy.
+7. Log in to X as the **bot account** in the same browser, then press **Connect X account** in the dashboard.
+
+Follow X's automation rules: label the account as automated in X's settings, and be careful with unsolicited replies (to my knowledge X restricts them). The bot only replies to people who mention it or reply to it, unless you fill `tracked_accounts` or turn on `search_enabled`, which are off by default. Read X's current rules before enabling either.
+
 ## Going live checklist
 
 Do these in order. Each step is reversible and costs little. Every step has a dashboard button (**Setup** tab); the terminal commands are optional equivalents.
@@ -411,7 +425,7 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 npm run typecheck
 npm run test:unit      # 166 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
-npm run test:engine    # 199 checks, the whole engine end to end
+npm run test:engine    # 201 checks, the whole engine end to end
 ```
 
 `test:limits` and `test:engine` start a throwaway embedded Postgres (no Docker). **Postgres refuses to run as root**, so run them as a normal user.
