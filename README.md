@@ -313,7 +313,7 @@ flowchart TD
 ```
 
 1. **Import** the GitHub repo into Vercel. Leave the framework preset as *Other* and leave the build settings alone: `vercel.json` already sets them (there is no website to build, only functions; `public/` just redirects `/` to the dashboard).
-2. **Database:** in the project's *Storage* tab add a free Postgres (for example Neon). Vercel adds the connection variables for you. The app reads `DATABASE_URL` and falls back to `POSTGRES_URL`. If neither exists, add `DATABASE_URL` yourself.
+2. **Database:** in the project's *Storage* tab add a free Postgres (for example Neon). Vercel adds the connection variables for you. The app uses `DATABASE_URL` if you set one, otherwise it finds the integration's own variable, including prefixed ones such as `storage_DATABASE_URL` (the pooled connection). Unpooled, non-pooling, no-SSL and Prisma variants are ignored on purpose. The Setup tab shows which variable name is in use. You do not need to copy the connection string anywhere.
 3. **Environment variables** (*Settings → Environment Variables*). Only these are needed to get started:
 
    | Variable | Value |
@@ -395,7 +395,7 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 120 checks, pure logic, no DB
+npm run test:unit      # 128 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
 npm run test:engine    # 172 checks, the whole engine end to end
 ```

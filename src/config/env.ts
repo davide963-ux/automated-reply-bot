@@ -2,6 +2,33 @@ import 'dotenv/config';
 import { z } from 'zod';
 import { HARD_LIMITS } from './limits';
 
+/**
+ * Where the database connection string comes from, in order:
+ *   1. DATABASE_URL            (explicit)
+ *   2. POSTGRES_URL
+ *   3. <prefix>_DATABASE_URL   (Vercel database integrations add a prefix, e.g. "storage_DATABASE_URL")
+ *   4. <prefix>_POSTGRES_URL
+ * Variants that are not what the app needs are ignored: UNPOOLED / NON_POOLING (direct connections,
+ * bad for serverless), NO_SSL, PRISMA. Values must look like a postgres URL. Returns the variable NAME
+ * too, so the dashboard can show which one is used (never the value).
+ */
+export function findDatabaseUrl(env: NodeJS.ProcessEnv = process.env): { name: string; value: string } | undefined {
+  const usable = (k: string) => {
+    const v = env[k]?.trim();
+    return v && /^postgres(ql)?:\/\//i.test(v) ? v : undefined;
+  };
+  for (const k of ['DATABASE_URL', 'POSTGRES_URL']) {
+    const v = usable(k);
+    if (v) return { name: k, value: v };
+  }
+  const rank = (k: string) => (/DATABASE_URL$/i.test(k) ? 0 : 1);
+  const candidates = Object.keys(env)
+    .filter((k) => /(^|_)(DATABASE|POSTGRES)_URL$/i.test(k) && !/UNPOOLED|NON_POOLING|NO_SSL|PRISMA/i.test(k) && usable(k))
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  const name = candidates[0];
+  return name ? { name, value: usable(name)! } : undefined;
+}
+
 const emptyToUndef = (v: unknown) =>
   typeof v === 'string' && v.trim() === '' ? undefined : v;
 
@@ -34,10 +61,10 @@ const schema = z.object({
   MAX_X_DAILY_SPEND: num(5, 0, 100000),
   MAX_LLM_DAILY_SPEND: num(5, 0, 100000),
 
-  // Vercel's database integrations may provide POSTGRES_URL instead of DATABASE_URL.
+  // Falls back to what Vercel's database integrations inject (see findDatabaseUrl).
   DATABASE_URL: z.preprocess(
-    (v) => emptyToUndef(v) ?? emptyToUndef(process.env.POSTGRES_URL),
-    z.string().min(1, 'DATABASE_URL is required (or POSTGRES_URL)'),
+    (v) => emptyToUndef(v) ?? findDatabaseUrl()?.value,
+    z.string().min(1, 'DATABASE_URL is required (or a Vercel database integration such as storage_DATABASE_URL)'),
   ),
   DATABASE_SSL: flag(false),
   DB_POOL_MAX: num(10, 1, 50),
@@ -116,7 +143,13 @@ function load() {
       maxTotalPerDay: e.MAX_TOTAL_PER_DAY,
     },
     budget: { maxXDailySpend: e.MAX_X_DAILY_SPEND, maxLlmDailySpend: e.MAX_LLM_DAILY_SPEND },
-    db: { url: e.DATABASE_URL, ssl: e.DATABASE_SSL, poolMax: e.DB_POOL_MAX },
+    db: {
+      url: e.DATABASE_URL,
+      ssl: e.DATABASE_SSL,
+      poolMax: e.DB_POOL_MAX,
+      // Name only (never the value): which variable the connection string came from.
+      urlSource: process.env.DATABASE_URL?.trim() ? 'DATABASE_URL' : (findDatabaseUrl()?.name ?? 'DATABASE_URL'),
+    },
     x: {
       clientId: e.X_CLIENT_ID,
       clientSecret: e.X_CLIENT_SECRET,

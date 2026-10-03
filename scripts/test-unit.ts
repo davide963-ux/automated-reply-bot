@@ -243,6 +243,22 @@ async function main(): Promise<void> {
   check('vercel.json: dashboard function bundles the sql/ migrations', vj.functions?.['api/dashboard.ts']?.includeFiles === 'sql/**' && fs.existsSync('sql/001_init.sql'));
   check('vercel.json: cron is daily (the only schedule Hobby accepts)', (vj.crons ?? []).every((c) => /^\d+ \d+ \* \* \*$/.test(c.schedule)) && (vj.crons ?? []).every((c) => fs.existsSync(`api/${c.path.replace('/api/', '')}.ts`)));
 
+  section('database variable discovery (Vercel adds a prefix such as storage_)');
+  const { findDatabaseUrl } = require('../src/config/env') as typeof import('../src/config/env');
+  const U = 'postgres://u:p@h.example/db?sslmode=require';
+  const pick = (env: Record<string, string>) => findDatabaseUrl(env as NodeJS.ProcessEnv)?.name;
+  check('explicit DATABASE_URL wins over everything', pick({ DATABASE_URL: U, storage_DATABASE_URL: U, POSTGRES_URL: U }) === 'DATABASE_URL');
+  check('then POSTGRES_URL', pick({ POSTGRES_URL: U, storage_DATABASE_URL: U }) === 'POSTGRES_URL');
+  check('the exact variable set Vercel/Neon created in this project: storage_DATABASE_URL (pooled) is chosen',
+    pick({ storage_NEON_PROJECT_ID: 'x', storage_POSTGRES_HOST: 'h', storage_POSTGRES_PASSWORD: 'p', storage_POSTGRES_PRISMA_URL: U, storage_POSTGRES_URL_NON_POOLING: U,
+           storage_DATABASE_URL: U, storage_DATABASE_URL_UNPOOLED: U, storage_POSTGRES_URL: U, storage_POSTGRES_URL_NO_SSL: U }) === 'storage_DATABASE_URL');
+  check('only POSTGRES_URL with a prefix works too', pick({ storage_POSTGRES_URL: U, storage_POSTGRES_URL_NON_POOLING: U }) === 'storage_POSTGRES_URL');
+  check('unpooled / non-pooling / no-ssl / prisma variants alone are NOT used', pick({ storage_DATABASE_URL_UNPOOLED: U, storage_POSTGRES_URL_NON_POOLING: U, storage_POSTGRES_URL_NO_SSL: U, storage_POSTGRES_PRISMA_URL: U }) === undefined);
+  check('values that are not postgres URLs are ignored', pick({ DATABASE_URL: 'not-a-url', storage_DATABASE_URL: 'mysql://x' }) === undefined);
+  check('prefix case does not matter', pick({ MY_DB_DATABASE_URL: U }) === 'MY_DB_DATABASE_URL');
+  const prefixed = probe({ storage_DATABASE_URL: 'postgres://prefixed/db', storage_DATABASE_URL_UNPOOLED: 'postgres://unpooled/db' });
+  check('config really loads from storage_DATABASE_URL (clean process)', prefixed.db === 'postgres://prefixed/db', JSON.stringify(prefixed));
+
   section('crash-proof serverless loading (the FUNCTION_INVOCATION_FAILED incident)');
   const { lazyHandler, summarizeBootError } = require('../src/lib/boot') as typeof import('../src/lib/boot');
   const { describeDbError } = require('../src/lib/dberror') as typeof import('../src/lib/dberror');
