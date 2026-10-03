@@ -36,8 +36,10 @@ async function main(): Promise<void> {
     tweetSeq: 9000,
     mentionsBody: undefined as unknown,
     meName: 'testbot',
+    llmMode: 'ok' as 'ok' | 'auth' | 'length',
+    llmReply: '{"action":"POST","text":"Spot ETH ETF inflows hit a record.","reason":"fresh"}',
     reset() {
-      this.requests = []; this.tweetQueue = []; this.refreshCalls = 0; this.tokenMode = 'ok'; this.tokenDelayMs = 0; this.mentionsBody = undefined; this.meName = 'testbot';
+      this.requests = []; this.tweetQueue = []; this.refreshCalls = 0; this.tokenMode = 'ok'; this.tokenDelayMs = 0; this.mentionsBody = undefined; this.meName = 'testbot'; this.llmMode = 'ok';
     },
     count(method: string, path: string) {
       return this.requests.filter((r) => r.method === method && r.path === path).length;
@@ -65,6 +67,12 @@ async function main(): Promise<void> {
           if (h) return h(req, res);
           return json(res, 201, { data: { id: String(++xs.tweetSeq), text: 'ok' } });
         }
+        if (u.pathname === '/v1/chat/completions' && req.method === 'POST') {
+          if (req.headers.authorization !== 'Bearer test-llm-key-123456') return json(res, 401, { code: 'Client specified an invalid argument', error: 'Incorrect API key provided: test-***. You can obtain an API key from https://console.x.ai.' });
+          if (xs.llmMode === 'auth') return json(res, 403, { code: 'Forbidden', error: 'Your team has no credits' });
+          if (xs.llmMode === 'length') return json(res, 200, { choices: [{ message: { content: '' }, finish_reason: 'length' }], usage: { prompt_tokens: 10, completion_tokens: 2900, total_tokens: 2910 } });
+          return json(res, 200, { choices: [{ message: { role: 'assistant', content: xs.llmReply }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 400 } });
+        }
         if (u.pathname === '/2/users/me') return json(res, 200, { data: { id: '42', username: xs.meName } });
         if (u.pathname === '/2/users/42/mentions') {
           return json(res, 200, xs.mentionsBody ?? { data: [{ id: '5001', text: '@testbot hello there friend', author_id: '7', conversation_id: '5001', created_at: new Date().toISOString() }], includes: { users: [{ id: '7', username: 'alice' }] } });
@@ -88,6 +96,10 @@ async function main(): Promise<void> {
     TOKEN_ENCRYPTION_KEY: 'c'.repeat(64),
     DASHBOARD_TOKEN: DASH_TOKEN,
     MAX_X_DAILY_SPEND: '5',
+    LLM_PROVIDER: 'openai',
+    LLM_API_KEY: 'test-llm-key-123456',
+    LLM_MODEL: 'fake-grok',
+    LLM_BASE_URL: `http://127.0.0.1:${xPort}/v1`, // the documented xAI style: base URL ending in /v1
   });
   delete process.env.X_ACCESS_TOKEN;
   delete process.env.X_REFRESH_TOKEN;
@@ -107,6 +119,8 @@ async function main(): Promise<void> {
   const { runTick } = require('../src/engine/tick') as typeof import('../src/engine/tick');
   const { runDueJobs } = require('../src/engine/scheduler') as typeof import('../src/engine/scheduler');
   const { createXClient } = require('../src/x/client') as typeof import('../src/x/client');
+  const { createProviderClient, withBudget } = require('../src/llm/client') as typeof import('../src/llm/client');
+  const { generatePost } = require('../src/llm/content') as typeof import('../src/llm/content');
   const { getAccessToken, saveTokens } = require('../src/x/tokens') as typeof import('../src/x/tokens');
   const { XAuthError, XRateLimitError, XBudgetError } = require('../src/x/types') as typeof import('../src/x/types');
   const { LlmUnavailableError } = require('../src/llm/client') as typeof import('../src/llm/client');
@@ -880,6 +894,30 @@ async function main(): Promise<void> {
   check('news route lists postable stories FIRST', newsRes.items.length > 0 && newsRes.items[0]!.decision === 'POST', JSON.stringify(newsRes.items.slice(0, 2)));
   check('news route summarises decisions and reasons in plain labels', newsRes.summary.some((r) => r.decision === 'POST' && r.n >= 1));
   setupSrv.close();
+
+  // ===========================================================================================
+  section('13. real LLM client against an xAI-style OpenAI-compatible server');
+  await reset();
+  const llmReq = () => xs.requests.filter((r) => r.path === '/v1/chat/completions').pop()!;
+  const real = createProviderClient();
+  const out1 = await real.complete({ system: 'sys', user: 'usr', maxTokens: 400, temperature: 0.8, purpose: 'test' });
+  check('works with a base URL that already ends in /v1 (hits /v1/chat/completions, not /v1/v1)', xs.count('POST', '/v1/chat/completions') === 1 && out1.text.includes('Spot ETH ETF'));
+  const llmSent = JSON.parse(llmReq().body) as { model: string; max_tokens: number; temperature: number; reasoning_effort?: string; messages: Array<{ role: string; content: string }> };
+  check('sends Bearer auth, the model id, system+user messages', llmReq().headers.authorization === 'Bearer test-llm-key-123456' && llmSent.model === 'fake-grok' && llmSent.messages[0]!.role === 'system' && llmSent.messages[1]!.content === 'usr');
+  check('adds reasoning headroom to max_tokens, passes temperature, no reasoning_effort by default', llmSent.max_tokens === 2900 && llmSent.temperature === 0.8 && llmSent.reasoning_effort === undefined, JSON.stringify(llmSent));
+  check('output tokens = total - prompt when reasoning tokens are reported outside completion_tokens (100 in, 300 out)', out1.inputTokens === 100 && out1.outputTokens === 300, JSON.stringify(out1));
+  const draftPost = await generatePost(real, { personality: 'dry', type: 'professional', news: { title: 'ETF inflows hit a record', summary: 'Flows rose.', source: 'CoinDesk' }, recentPosts: [], maxChars: 270 });
+  check('a post is generated through the real client (JSON extracted from the reply)', draftPost.action === 'POST' && draftPost.text === 'Spot ETH ETF inflows hit a record.');
+  const budgeted = withBudget(real, accountId);
+  await budgeted.complete({ system: 's', user: 'u', maxTokens: 100, purpose: 'test' });
+  check('spend is recorded in daily_usage (requests + estimated cost)', Number(await one('select coalesce(sum(llm_requests),0)::text v from daily_usage')) === 1 && Number(await one('select coalesce(sum(estimated_llm_cost),0)::text v from daily_usage')) > 0);
+  xs.llmMode = 'auth';
+  const e403 = await real.complete({ system: 's', user: 'u', maxTokens: 10, purpose: 'test' }).catch((e: unknown) => e);
+  check("the provider's own error text is surfaced (xAI string-style errors), as an LlmUnavailableError", e403 instanceof LlmUnavailableError && /no credits/.test(String((e403 as Error).message)), String((e403 as Error)?.message));
+  xs.llmMode = 'length';
+  const eLen = await real.complete({ system: 's', user: 'u', maxTokens: 10, purpose: 'test' }).catch((e: unknown) => e);
+  check('a reply cut off by the token limit is a clear error pointing at LLM_EFFORT', eLen instanceof LlmUnavailableError && /LLM_EFFORT/.test(String((eLen as Error).message)));
+  check('the API key never appears in an error message', !String((e403 as Error).message).includes('test-llm-key-123456') && !String((eLen as Error).message).includes('test-llm-key-123456'));
 
   console.log('\n(shutting down embedded Postgres)');
   xServer.close();

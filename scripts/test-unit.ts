@@ -252,6 +252,46 @@ async function main(): Promise<void> {
   check('every tab named in the script has a view', ['Setup', 'Overview', 'Approvals', 'Activity', 'News', 'Posts', 'Replies', 'Settings'].every((t) => new RegExp(`async ${t}\\(`).test(pageJs)));
   check('the page script never uses innerHTML (untrusted text is rendered with textContent)', !pageJs.includes('innerHTML'));
 
+  section('Anthropic request body (current Claude models reject temperature)');
+  const { anthropicBody } = require('../src/llm/client') as typeof import('../src/llm/client');
+  const rq = { system: 's', user: 'u', maxTokens: 400, temperature: 0.8, purpose: 'x' };
+  const modern = anthropicBody('claude-sonnet-7-1', rq) as { max_tokens: number; temperature?: number; output_config?: { effort: string } };
+  check('never sends temperature, even when the caller asked for one', !('temperature' in modern) && !('top_p' in modern));
+  check('a current reasoning model runs at low effort by default', modern.output_config?.effort === 'low');
+  check('...with headroom for reasoning tokens (they count against max_tokens)', modern.max_tokens === 3400);
+  const older = anthropicBody('claude-haiku-3-5', rq) as { max_tokens: number; output_config?: unknown };
+  check('an older model gets no effort field (it would be rejected) and no headroom', older.output_config === undefined && older.max_tokens === 400);
+  check('LLM_EFFORT=none disables effort even on a current model', (anthropicBody('claude-opus-9', rq, 'none') as { output_config?: unknown }).output_config === undefined);
+  check('LLM_EFFORT=medium overrides the default', (anthropicBody('claude-opus-9', rq, 'medium') as { output_config: { effort: string } }).output_config.effort === 'medium');
+  check('LLM_EFFORT is honoured on an older-looking id when set explicitly', (anthropicBody('claude-haiku-3-5', rq, 'high') as { output_config: { effort: string } }).output_config.effort === 'high');
+  check('system prompt and user message are passed through', (anthropicBody('claude-opus-9', rq) as { system: string; messages: Array<{ role: string; content: string }> }).system === 's');
+
+  section('OpenAI-compatible provider (xAI, Groq, OpenRouter, ...)');
+  const { openaiUrl, openaiBody, parseOpenAiReply, LlmUnavailableError: LlmErr } = require('../src/llm/client') as typeof import('../src/llm/client');
+  check('url: xAI documented base "https://api.x.ai/v1" is not doubled to /v1/v1', openaiUrl('https://api.x.ai/v1') === 'https://api.x.ai/v1/chat/completions');
+  check('url: bare host gets /v1/chat/completions', openaiUrl('https://api.x.ai') === 'https://api.x.ai/v1/chat/completions');
+  check('url: trailing slash tolerated', openaiUrl('https://api.x.ai/v1/') === 'https://api.x.ai/v1/chat/completions');
+  check('url: a full chat/completions URL is used as is', openaiUrl('https://h.example/v1/chat/completions') === 'https://h.example/v1/chat/completions');
+  check('url: Gemini-style ".../v1beta/openai" base', openaiUrl('https://generativelanguage.googleapis.com/v1beta/openai') === 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+  check('url: Groq-style ".../openai/v1" base', openaiUrl('https://api.groq.com/openai/v1') === 'https://api.groq.com/openai/v1/chat/completions');
+  check('url: OpenRouter-style base without /v1 gets the suffix', openaiUrl('https://openrouter.ai/api') === 'https://openrouter.ai/api/v1/chat/completions');
+  check('url: default is OpenAI', openaiUrl(undefined) === 'https://api.openai.com/v1/chat/completions');
+  const ob = openaiBody('some-model', { system: 's', user: 'u', maxTokens: 400, temperature: 0.8, purpose: 'x' }, { sendTemperature: true }) as { max_tokens: number; temperature?: number; reasoning_effort?: string; messages: Array<{ role: string }> };
+  check('body: headroom for reasoning tokens', ob.max_tokens === 2900);
+  check('body: temperature sent by default, system+user messages', ob.temperature === 0.8 && ob.messages.map((m) => m.role).join() === 'system,user');
+  check('body: no reasoning_effort unless asked', ob.reasoning_effort === undefined);
+  check('body: LLM_SEND_TEMPERATURE=false omits temperature', !('temperature' in (openaiBody('m', { system: 's', user: 'u', maxTokens: 10, temperature: 0, purpose: 'x' }, { sendTemperature: false }))));
+  check('body: LLM_EFFORT=low becomes reasoning_effort', (openaiBody('m', { system: 's', user: 'u', maxTokens: 10, purpose: 'x' }, { sendTemperature: true, effort: 'low' }) as { reasoning_effort?: string }).reasoning_effort === 'low');
+  check('body: Claude-only levels (xhigh/max/none) are never sent', !('reasoning_effort' in openaiBody('m', { system: 's', user: 'u', maxTokens: 10, purpose: 'x' }, { sendTemperature: true, effort: 'max' })) && !('reasoning_effort' in openaiBody('m', { system: 's', user: 'u', maxTokens: 10, purpose: 'x' }, { sendTemperature: true, effort: 'none' })));
+  const okReply = parseOpenAiReply({ choices: [{ message: { content: 'hi' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 400 } });
+  check('reply: text parsed', okReply.text === 'hi' && okReply.inputTokens === 100);
+  check('reply: reasoning tokens excluded from completion_tokens are still counted (total - prompt)', okReply.outputTokens === 300, String(okReply.outputTokens));
+  check('reply: when completion_tokens already includes them, nothing is double counted', parseOpenAiReply({ choices: [{ message: { content: 'x' } }], usage: { prompt_tokens: 100, completion_tokens: 300, total_tokens: 400 } }).outputTokens === 300);
+  check('reply: missing usage is tolerated', parseOpenAiReply({ choices: [{ message: { content: 'x' } }] }).outputTokens === 0);
+  check('reply: finish_reason "length" is a clear error that suggests LLM_EFFORT', (await expectThrows(async () => parseOpenAiReply({ choices: [{ message: { content: '{"a"' }, finish_reason: 'length' }] }))) !== null);
+  check('reply: content_filter is reported as such', /filtered/.test((await expectThrows(async () => parseOpenAiReply({ choices: [{ message: { content: null }, finish_reason: 'content_filter' }] }))) ?? ''));
+  check('reply: errors are LlmUnavailableError (retried later, never published)', await (async () => { try { parseOpenAiReply({ choices: [{ message: { content: '' }, finish_reason: 'length' }] }); return false; } catch (e) { return e instanceof LlmErr; } })());
+
   section('Vercel deploy config');
   const fs = require('fs') as typeof import('fs');
   const vj = JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as { outputDirectory?: string; buildCommand?: string; functions?: Record<string, { includeFiles?: string }>; crons?: Array<{ path: string; schedule: string }> };

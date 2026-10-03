@@ -268,6 +268,18 @@ Everything is in `.env.example` with comments. The essentials:
 | `CRON_SECRET` (16+ chars) | Protects `/api/tick` on Vercel |
 | `TOKEN_ENCRYPTION_KEY` | `openssl rand -hex 32` |
 
+### Choosing an LLM
+
+The bot needs an LLM API key (a **chat subscription does not include API access**; the API is billed separately, per token). X does not provide one: the X developer account only gives access to X itself. X's sister company xAI sells its own separate API (Grok) at `console.x.ai`.
+
+| Provider | Set these in Vercel | Notes |
+|---|---|---|
+| **Anthropic (Claude), recommended** | `LLM_PROVIDER=anthropic`, `LLM_API_KEY=<key from console.anthropic.com>`, `LLM_MODEL=<model id>` | The best-supported path in this code. A mid-priced current model is plenty for short posts and the safety judge. Set `LLM_PRICE_IN_PER_MTOK` / `LLM_PRICE_OUT_PER_MTOK` from the provider's price list so the daily spend cap is accurate |
+| xAI (Grok) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=https://api.x.ai/v1`, `LLM_API_KEY=<key from console.x.ai>`, `LLM_MODEL=<exact model id from the console>` | Uses the OpenAI-compatible path. Tested against a fake xAI-style server, **not** against the real xAI service. Model names change and old ones are retired, so copy the id from the console. If calls are slow or cut off, add `LLM_EFFORT=low`. Set `LLM_PRICE_IN_PER_MTOK` / `LLM_PRICE_OUT_PER_MTOK` from the console's price list |
+| Other OpenAI-compatible services (Groq, OpenRouter, Gemini's compatibility endpoint, ...) | `LLM_PROVIDER=openai`, `LLM_BASE_URL=<the provider's base URL>` | Same caveat. `LLM_BASE_URL` may be a bare host, a `.../v1` base, or the full `.../chat/completions` URL. `LLM_SEND_TEMPERATURE=false` if the provider rejects `temperature` |
+
+`LLM_MODEL` has no default on purpose: model names change. Take the exact id from the provider's model list. For the Anthropic provider the code never sends `temperature` (current Claude models reject it) and runs current reasoning models at low effort (`LLM_EFFORT` to change).
+
 Runtime settings live in the `settings` table and are editable in the dashboard (validated, limits can only go down): `personality`, `professional_ratio`, `min_confidence`, `active_hours`, `min_gap_minutes`, `min_reply_gap_minutes`, `tracked_accounts`, `tracked_keywords`, `breaking_threshold`, `max_bot_replies_per_conversation`, `max_replies_per_user_per_day`, `reply_enabled`, `search_enabled`, `news_max_age_hours`, `include_source_link`, `approval_ttl_hours`, `collect_while_paused`.
 
 News sources are rows in the `sources` table (seeded with 7 RSS feeds; edit, disable, or add your own and tune `reliability`).
@@ -397,9 +409,9 @@ update settings set value = '"PAUSED"' where key = 'bot_status';   -- emergency 
 
 ```bash
 npm run typecheck
-npm run test:unit      # 137 checks, pure logic, no DB
+npm run test:unit      # 166 checks, pure logic, no DB
 npm run test:limits    # 27 checks, daily limits attacked at the DB level
-npm run test:engine    # 190 checks, the whole engine end to end
+npm run test:engine    # 199 checks, the whole engine end to end
 ```
 
 `test:limits` and `test:engine` start a throwaway embedded Postgres (no Docker). **Postgres refuses to run as root**, so run them as a normal user.
