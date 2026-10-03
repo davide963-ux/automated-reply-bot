@@ -140,6 +140,7 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
         return send(res, 200, {
           schemaReady: false,
           dbSource: config.db.urlSource,
+          applied: mig.applied,
           pending: mig.pending,
           x: { connected: false, needsReauth: false, ...xSetup() },
           llm: { configured: Boolean(config.llm.provider && config.llm.apiKey && config.llm.model) },
@@ -178,13 +179,30 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
           }
           case 'news': {
             const decision = url.searchParams.get('decision');
+            // Postable stories first (best score first), then waiting ones, then the ignored: the useful rows are never buried.
             const r = await query(
               `select n.id, n.title, n.url, s.name as source, n.topic, n.decision, n.decision_reason, n.confidence, n.importance_score, n.freshness, n.published_at
                  from news_items n left join sources s on s.id = n.source_id
-                where ($1::text is null or n.decision = $1) order by n.fetched_at desc limit $2`,
+                where ($1::text is null or n.decision = $1)
+                order by case n.decision when 'POST' then 0 when 'WAIT_FOR_CONFIRMATION' then 1 when 'PENDING' then 2 else 3 end,
+                         n.confidence desc nulls last, n.published_at desc nulls last
+                limit $2`,
               [decision, limit],
             );
-            return send(res, 200, { items: r.rows });
+            // Why are stories ignored? (reasons grouped into a few plain labels)
+            const sum = await query(
+              `select decision,
+                      case when decision_reason like 'confidence %' then 'score too low'
+                           when decision_reason like 'low crypto relevance%' then 'not about crypto'
+                           when decision_reason like 'duplicates%' then 'duplicate of something posted'
+                           when decision_reason = 'too old' then 'too old'
+                           when decision_reason like 'llm skip%' then 'model skipped it'
+                           when decision_reason like 'source reliability%' then 'waiting for a 2nd source'
+                           else coalesce(decision_reason, '') end as reason,
+                      count(*)::int as n
+                 from news_items group by 1, 2 order by n desc`,
+            );
+            return send(res, 200, { items: r.rows, summary: sum.rows });
           }
           case 'posts': {
             const r = await query(`select id, content, content_type, status, risk_level, rejection_reason, publish_error, x_post_id, created_at, published_at from posts order by created_at desc limit $1`, [limit]);

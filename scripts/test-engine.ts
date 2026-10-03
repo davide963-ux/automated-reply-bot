@@ -298,6 +298,31 @@ async function main(): Promise<void> {
   const rescored = await collect();
   check('lowering it again RE-SCORES the ignored story back to POST (no new fetch needed)', (await dec('SEC approves spot Ethereum%')) === 'POST' && rescored.newItems === 0);
   check('final reasons stay final: the stale story is not revived', (await dec('SEC approves spot Solana%')) === 'IGNORE' && (await one<string>('select decision_reason v from news_items where title like $1', ['SEC approves spot Solana%'])) !== null);
+  const solanaReason = async () => one<string>('select decision_reason v from news_items where title like $1', ['SEC approves spot Solana%']);
+  await writeSetting('news_max_age_hours', 72);
+  await collect();
+  check("raising news_max_age_hours re-scores 'too old' stories (they are no longer stuck on 'too old')", (await solanaReason()) !== 'too old', String(await solanaReason()));
+  await writeSetting('news_max_age_hours', 12);
+  await collect();
+  check("...and lowering it puts them back to 'too old'", (await solanaReason()) === 'too old', String(await solanaReason()));
+
+  // ===========================================================================================
+  section('1b. batched writes at real-world volume, with hostile characters');
+  await reset();
+  const tricky = 'He said "hello", {braces} and \\ backslash, plus \'quotes\' & ampersand [x]';
+  const many = (host: string, n: number) => Array.from({ length: n }, (_, i) => [`${host} filler story ${i} about nothing`, 'Nothing here.', 2] as [string, string, number]);
+  feeds['https://feeds.test/coindesk'] = feedXml('coindesk', [[tricky, 'Bitcoin and ethereum news about ETF flows.', 1], ...many('coindesk', 59)]);
+  feeds['https://feeds.test/shady'] = feedXml('shady', many('shady', 60));
+  feeds['https://feeds.test/theblock'] = feedXml('theblock', many('theblock', 60));
+  const t0 = Date.now();
+  const bulk = await collect();
+  const took = Date.now() - t0;
+  check('180 stories inserted, counted exactly (3 feeds x 60)', bulk.newItems === 180 && bulk.sources.every((x) => x.items === 60 && x.newItems === 60), JSON.stringify(bulk.sources));
+  check('a title full of quotes, braces, commas, backslashes and an ampersand is stored byte-for-byte', (await one<string>('select title v from news_items where title like $1', ['He said%'])) === tricky);
+  check('every story was scored (none left PENDING)', Number(await one(`select count(*)::text v from news_items where decision = 'PENDING'`)) === 0);
+  check('the whole fetch is fast with batching (a handful of statements, not hundreds)', took < 5000, `${took}ms`);
+  const refetch = await collect();
+  check('fetching the same 180 again adds nothing', refetch.newItems === 0);
 
   // ===========================================================================================
   section('2. DRY_RUN: full pipeline, nothing sent, no slot consumed');
@@ -776,6 +801,11 @@ async function main(): Promise<void> {
   check('migrationStatus: up to date', ms.ready && ms.pending.length === 0 && ms.applied.length === 3, JSON.stringify(ms));
   const migrated = (await (await spost('migrate', {})).json()) as { ok: boolean; applied: string[] };
   check('migrate route is idempotent (nothing to apply)', migrated.ok && migrated.applied.length === 0);
+  await query(`delete from schema_migrations where filename = '003_tune_min_confidence.sql'`);
+  const partial = (await (await sget('status')).json()) as { schemaReady: boolean; applied: string[]; pending: string[] };
+  check('partly migrated: status says what is applied and what is pending (so the UI can say "your data is kept")', partial.schemaReady === false && partial.applied.length === 2 && partial.pending.length === 1 && partial.pending[0]!.startsWith('003'), JSON.stringify(partial));
+  const partialApply = (await (await spost('migrate', {})).json()) as { applied: string[] };
+  check('applying the single pending update works', partialApply.applied.length === 1 && partialApply.applied[0]!.startsWith('003'));
   await query('alter table schema_migrations rename to sm_bak');
   const notReady = await migrationStatus();
   check('migrationStatus: pending when the migrations table is missing', !notReady.ready && notReady.pending.length === 3);
@@ -846,6 +876,9 @@ async function main(): Promise<void> {
   feeds['https://feeds.test/coindesk'] = feedXml('coindesk', [[STORIES[0]![0], STORIES[0]![1], 1]]);
   const col = (await (await spost('collect', {})).json()) as { newItems: number; eligible: number };
   check('collect route (dashboard button) fetches and scores news', col.newItems === 1 && col.eligible === 1, JSON.stringify(col));
+  const newsRes = (await (await sget('news')).json()) as { items: Array<{ decision: string; title: string }>; summary: Array<{ decision: string; reason: string; n: number }> };
+  check('news route lists postable stories FIRST', newsRes.items.length > 0 && newsRes.items[0]!.decision === 'POST', JSON.stringify(newsRes.items.slice(0, 2)));
+  check('news route summarises decisions and reasons in plain labels', newsRes.summary.some((r) => r.decision === 'POST' && r.n >= 1));
   setupSrv.close();
 
   console.log('\n(shutting down embedded Postgres)');

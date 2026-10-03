@@ -90,14 +90,23 @@ export async function collectNews(
         continue;
       }
       result.sourcesOk++;
+      // One statement per source, not one round trip per story: over a network database (Neon) from a
+      // serverless function, hundreds of sequential inserts are slow and risk the function time limit.
+      // ON CONFLICT DO NOTHING also tolerates duplicate URLs inside the batch.
       let added = 0;
-      for (const it of items) {
+      if (items.length > 0) {
         const ins = await query(
           `insert into news_items (source_id, url, title, summary, published_at, content_hash, source_reliability)
-           values ($1,$2,$3,$4,$5,$6,$7) on conflict (url) do nothing`,
-          [src.id, it.url, it.title, it.summary, it.publishedAt, contentHash(it.title), src.reliability],
+           select $1::uuid, x.url, x.title, x.summary, x.published_at, x.content_hash, $2::numeric
+             from unnest($3::text[], $4::text[], $5::text[], $6::timestamptz[], $7::text[]) as x(url, title, summary, published_at, content_hash)
+           on conflict (url) do nothing`,
+          [
+            src.id, src.reliability,
+            items.map((i) => i.url), items.map((i) => i.title), items.map((i) => i.summary),
+            items.map((i) => i.publishedAt), items.map((i) => contentHash(i.title)),
+          ],
         );
-        added += ins.rowCount ?? 0;
+        added = ins.rowCount ?? 0;
       }
       result.newItems += added;
       result.sources.push({ name: src.name, items: items.length, newItems: added });
@@ -161,10 +170,11 @@ export async function evaluateOpenNews(
        from news_items n
       where (n.decision in ('PENDING','WAIT_FOR_CONFIRMATION','POST')
              -- Ignored only because of its SCORE: re-score it, so changing min_confidence (or the duplicate
-             -- history) takes effect on stories already collected. Final reasons (too old, expired, model SKIP) stay final.
+             -- history) takes effect on stories already collected. Final reasons (expired, model SKIP) stay final.
              or (n.decision = 'IGNORE' and (n.decision_reason like 'confidence %'
                                             or n.decision_reason like 'low crypto relevance%'
-                                            or n.decision_reason like 'duplicates%')))
+                                            or n.decision_reason like 'duplicates%'
+                                            or n.decision_reason = 'too old')))
         and not exists (select 1 from posts p where p.news_item_id = n.id)
         and n.fetched_at > now() - make_interval(hours => $1)`,
     [windowH],
@@ -176,6 +186,8 @@ export async function evaluateOpenNews(
   );
 
   let eligible = 0;
+  const upd = { id: [] as string[], topic: [] as string[], imp: [] as number[], rel: [] as number[], fresh: [] as number[], srel: [] as number[],
+    acct: [] as number[], dup: [] as number[], conf: [] as number[], decision: [] as string[], reason: [] as string[], confirmations: [] as string[] };
   for (const n of open) {
     const scores: Scores = scoreNews(
       {
@@ -191,17 +203,22 @@ export async function evaluateOpenNews(
     const confirmations = pool.filter((o) => o.id !== n.id && isConfirmation(n, o)).map((o) => o.url);
     const { decision, reason } = decideNews(scores, { minConfidence: settings.minConfidence, confirmations: confirmations.length });
     if (decision === 'POST') eligible++;
-
+    upd.id.push(n.id); upd.topic.push(scores.topic); upd.imp.push(scores.importance); upd.rel.push(scores.cryptoRelevance);
+    upd.fresh.push(scores.freshness); upd.srel.push(scores.sourceReliability); upd.acct.push(scores.accountRelevance);
+    upd.dup.push(scores.duplicateProbability); upd.conf.push(scores.confidence); upd.decision.push(decision); upd.reason.push(reason);
+    upd.confirmations.push(JSON.stringify(confirmations.slice(0, 5)));
+  }
+  // One UPDATE for the whole batch instead of one round trip per story.
+  if (upd.id.length > 0) {
     await query(
-      `update news_items set topic=$2, importance_score=$3, crypto_relevance=$4, freshness=$5,
-              source_reliability=$6, account_relevance=$7, duplicate_probability=$8, confidence=$9,
-              decision=$10, decision_reason=$11, confirmations=$12
-        where id=$1`,
-      [
-        n.id, scores.topic, scores.importance, scores.cryptoRelevance, scores.freshness,
-        scores.sourceReliability, scores.accountRelevance, scores.duplicateProbability, scores.confidence,
-        decision, reason, JSON.stringify(confirmations.slice(0, 5)),
-      ],
+      `update news_items n set topic = v.topic, importance_score = v.imp, crypto_relevance = v.rel, freshness = v.fresh,
+              source_reliability = v.srel, account_relevance = v.acct, duplicate_probability = v.dup, confidence = v.conf,
+              decision = v.decision, decision_reason = v.reason, confirmations = v.confirmations::jsonb
+         from unnest($1::uuid[], $2::text[], $3::numeric[], $4::numeric[], $5::numeric[], $6::numeric[], $7::numeric[], $8::numeric[],
+                     $9::numeric[], $10::text[], $11::text[], $12::text[])
+              as v(id, topic, imp, rel, fresh, srel, acct, dup, conf, decision, reason, confirmations)
+        where n.id = v.id`,
+      [upd.id, upd.topic, upd.imp, upd.rel, upd.fresh, upd.srel, upd.acct, upd.dup, upd.conf, upd.decision, upd.reason, upd.confirmations],
     );
   }
   return { evaluated: open.length, eligible };
