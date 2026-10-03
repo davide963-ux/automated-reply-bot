@@ -1,5 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "echo 'nothing to build: Vercel compiles api/*.ts itself'",
+  "outputDirectory": "public",
   "functions": {
     "api/tick.ts": { "maxDuration": 60 },
     "api/dashboard.ts": { "maxDuration": 60, "includeFiles": "sql/**" },

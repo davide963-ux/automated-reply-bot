@@ -233,6 +233,16 @@ async function main(): Promise<void> {
   const a5 = probe({ DATABASE_URL: 'postgres://x/db' });
   check('local default redirect when not on Vercel', a5.redirect === 'http://127.0.0.1:3000/callback');
 
+  section('Vercel deploy config');
+  const fs = require('fs') as typeof import('fs');
+  const vj = JSON.parse(fs.readFileSync('vercel.json', 'utf8')) as { outputDirectory?: string; buildCommand?: string; functions?: Record<string, { includeFiles?: string }>; crons?: Array<{ path: string; schedule: string }> };
+  check('vercel.json: outputDirectory exists (the "No Output Directory named public" error)', !!vj.outputDirectory && fs.existsSync(vj.outputDirectory) && fs.statSync(vj.outputDirectory).isDirectory());
+  check('vercel.json: public/ has an index.html that sends visitors to the dashboard', fs.existsSync('public/index.html') && fs.readFileSync('public/index.html', 'utf8').includes('/api/dashboard'));
+  check('vercel.json: no heavy build step (Vercel compiles api/*.ts itself)', !!vj.buildCommand && !/tsc|npm run build/.test(vj.buildCommand));
+  check('vercel.json: every function file exists', Object.keys(vj.functions ?? {}).every((f) => fs.existsSync(f)));
+  check('vercel.json: dashboard function bundles the sql/ migrations', vj.functions?.['api/dashboard.ts']?.includeFiles === 'sql/**' && fs.existsSync('sql/001_init.sql'));
+  check('vercel.json: cron is daily (the only schedule Hobby accepts)', (vj.crons ?? []).every((c) => /^\d+ \d+ \* \* \*$/.test(c.schedule)) && (vj.crons ?? []).every((c) => fs.existsSync(`api/${c.path.replace('/api/', '')}.ts`)));
+
   finish('unit tests');
 }
 

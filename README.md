@@ -312,7 +312,7 @@ flowchart TD
     I --> J[Resume, still DRY_RUN: watch Activity]
 ```
 
-1. **Import** the GitHub repo into Vercel (framework preset: *Other*).
+1. **Import** the GitHub repo into Vercel. Leave the framework preset as *Other* and leave the build settings alone: `vercel.json` already sets them (there is no website to build, only functions; `public/` just redirects `/` to the dashboard).
 2. **Database:** in the project's *Storage* tab add a free Postgres (for example Neon). Vercel adds the connection variables for you. The app reads `DATABASE_URL` and falls back to `POSTGRES_URL`. If neither exists, add `DATABASE_URL` yourself.
 3. **Environment variables** (*Settings → Environment Variables*). Only these are needed to get started:
 
