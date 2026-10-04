@@ -26,6 +26,8 @@ export interface Settings {
   maxBotRepliesPerConversation: number;
   maxRepliesPerUserPerDay: number;
   replyEnabled: boolean;
+  /** 'crypto': reply only to crypto talk. 'general': any everyday topic (politics, tragedies, advice etc. stay off). */
+  replyScope: 'crypto' | 'general';
   searchEnabled: boolean;
   newsMaxAgeHours: number;
   includeSourceLink: boolean;
@@ -56,6 +58,7 @@ export const SETTING_SCHEMAS = {
   max_bot_replies_per_conversation: z.number().int().min(1).max(10),
   max_replies_per_user_per_day: z.number().int().min(1).max(10),
   reply_enabled: z.boolean(),
+  reply_scope: z.enum(['crypto', 'general']),
   search_enabled: z.boolean(),
   news_max_age_hours: z.number().int().min(1).max(72),
   include_source_link: z.boolean(),
@@ -92,6 +95,7 @@ export async function loadSettings(): Promise<Settings> {
     maxBotRepliesPerConversation: pick('max_bot_replies_per_conversation', 3),
     maxRepliesPerUserPerDay: pick('max_replies_per_user_per_day', 2),
     replyEnabled: pick('reply_enabled', true),
+    replyScope: pick('reply_scope', 'crypto'),
     searchEnabled: pick('search_enabled', false),
     newsMaxAgeHours: pick('news_max_age_hours', 12),
     includeSourceLink: pick('include_source_link', false),
