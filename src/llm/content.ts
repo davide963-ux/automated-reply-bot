@@ -31,8 +31,10 @@ const STYLE: Record<PostType | ReplyStyle, string> = {
   neutral: 'Friendly, brief, helpful. No slang.',
 };
 
-export function personaSystem(personality: string): string {
-  return `You write short posts for an X (Twitter) account about crypto.
+export type ReplyScope = 'crypto' | 'general';
+
+export function personaSystem(personality: string, scope: ReplyScope = 'crypto'): string {
+  return `You write short posts for an X (Twitter) account${scope === 'crypto' ? ' about crypto' : ''}.
 Persona: ${personality}.
 ${RULES}`;
 }
@@ -99,6 +101,18 @@ export interface ReplyDecision {
   text: string;
 }
 
+/** The REPLY / IGNORE criteria. 'general' widens the topic only: every IGNORE category except "not crypto" stays. */
+export function replyCriteria(scope: ReplyScope): string {
+  const reply =
+    scope === 'general'
+      ? 'REPLY only if: it is a genuine question, a substantive discussion on an everyday topic (tech, markets, culture, art, internet life, humour) we can add a correct, useful or genuinely witty point to, or a polite direct comment to us.'
+      : 'REPLY only if: it is a genuine question, a substantive crypto discussion we can add a correct, useful point to, or a polite direct comment to us.';
+  const ignore =
+    'IGNORE if: trolling, insults, rage-bait, spam, giveaways, shilling, scams, price-prediction bait, politics, personal drama, bots, bare emoji/links, anything you are unsure about, or you would need facts you do not have.' +
+    (scope === 'general' ? ' Also IGNORE health/medical, legal and tragedy topics, and never invent personal anecdotes or experiences.' : '');
+  return `${reply}\n${ignore}`;
+}
+
 export async function decideReply(
   llm: LlmClient,
   a: {
@@ -107,13 +121,14 @@ export async function decideReply(
     solicited: boolean; // a human wrote to us (mention / reply to us)
     history: Array<{ who: 'them' | 'us'; text: string }>;
     maxChars: number;
+    scope?: ReplyScope;
   },
 ): Promise<ReplyDecision> {
+  const scope = a.scope ?? 'crypto';
   const user = `Decide whether our account should reply to this tweet, and if so write the reply (max ${a.maxChars} characters).
 Situation: ${a.solicited ? 'A person addressed OUR account directly.' : 'We found this tweet ourselves; replying is optional and must ADD VALUE.'}
 
-REPLY only if: it is a genuine question, a substantive crypto discussion we can add a correct, useful point to, or a polite direct comment to us.
-IGNORE if: trolling, insults, rage-bait, spam, giveaways, shilling, scams, price-prediction bait, politics, personal drama, bots, bare emoji/links, anything you are unsure about, or you would need facts you do not have.
+${replyCriteria(scope)}
 Never argue. Never reply to hate. When in doubt: IGNORE.
 
 Conversation so far (oldest first):
@@ -125,7 +140,7 @@ Tweet to evaluate, from @${a.tweet.author}:
 JSON: {"decision":"REPLY"|"IGNORE","confidence":0..1,"reason":"<short>","style":"professional"|"degen"|"neutral","topic":"<1-3 words>","sentiment":"positive"|"neutral"|"negative"|"mixed","text":"<reply, only when REPLY>"}
 confidence = how sure you are that replying is the RIGHT call.`;
 
-  const res = await llm.complete({ system: personaSystem(a.personality), user, maxTokens: 450, temperature: 0.6, purpose: 'decide_reply' });
+  const res = await llm.complete({ system: personaSystem(a.personality, scope), user, maxTokens: 450, temperature: 0.6, purpose: 'decide_reply' });
   const out = parseJsonReply(res.text, replySchema);
   return {
     decision: out.decision,

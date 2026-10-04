@@ -426,6 +426,18 @@ async function main(): Promise<void> {
   const tickNoEnv = replay({}, '/api/tick');
   check('REPLAY: /api/tick with no environment is also a readable 500', tickNoEnv.status === 500 && tickNoEnv.body.includes('DATABASE_URL'), JSON.stringify(tickNoEnv));
 
+  section('reply scope');
+  const { replyCriteria, personaSystem } = require('../src/llm/content') as typeof import('../src/llm/content');
+  const cryptoCrit = replyCriteria('crypto');
+  const generalCrit = replyCriteria('general');
+  check('crypto scope: replies only to crypto discussion (unchanged)', /substantive crypto discussion/.test(cryptoCrit) && !/everyday topic/.test(cryptoCrit));
+  check('general scope: everyday topics allowed', /everyday topic/.test(generalCrit) && !/substantive crypto discussion/.test(generalCrit));
+  check('both scopes keep politics / trolling / shilling / advice-bait on the IGNORE list', [cryptoCrit, generalCrit].every((c) => /politics/.test(c) && /trolling/.test(c) && /shilling/.test(c) && /price-prediction bait/.test(c)));
+  check('general scope also ignores health/legal/tragedy and forbids invented anecdotes', /health\/medical, legal and tragedy/.test(generalCrit) && /never invent personal anecdotes/.test(generalCrit));
+  check('persona says "about crypto" only in crypto scope', /about crypto/.test(personaSystem('x', 'crypto')) && !/about crypto/.test(personaSystem('x', 'general')));
+  check('persona keeps the hard rules in both scopes', /No financial advice/.test(personaSystem('x', 'general')) && /No politics/.test(personaSystem('x', 'general')));
+  check('reply_scope setting only accepts crypto|general', SETTING_SCHEMAS.reply_scope.safeParse('general').success && !SETTING_SCHEMAS.reply_scope.safeParse('anything').success);
+
   finish('unit tests');
 }
 

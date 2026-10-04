@@ -167,6 +167,7 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
         solicited,
         history,
         maxChars: MAX_REPLY_CHARS,
+        scope: s.replyScope,
       });
     } catch (err) {
       log.warn('reply decision failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
