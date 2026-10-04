@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { config } from '../config/env';
 import { query } from '../db/client';
+import { getState } from '../db/state';
 import { migrationStatus, runMigrations } from '../db/migrate';
 import { SETTING_SCHEMAS, loadSettings, writeSetting } from '../config/settings';
 import { approveItem, createManualPost, pauseBot, rejectItem, resumeBot } from '../engine/control';
@@ -93,6 +94,10 @@ async function status(deps: Deps) {
     x: { connected: Boolean(tok), needsReauth: tok?.needs_reauth ?? false, ...xSetup() },
     llm: { configured: Boolean(config.llm.provider && config.llm.apiKey && config.llm.model) },
     jobs,
+    engines: {
+      post: (await getState<{ result: string; at: string }>('last_post_result')) ?? null,
+      reply: (await getState<{ result: string; at: string }>('last_reply_result')) ?? null,
+    },
   };
 }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { query, dbHealthy } from '../db/client';
+import { setState } from '../db/state';
 import { loadSettings } from '../config/settings';
 import { logger } from '../lib/logger';
 import { collectNews } from '../news/collector';
@@ -34,6 +35,11 @@ async function acquireLock(holder: string): Promise<boolean> {
 
 async function releaseLock(holder: string): Promise<void> {
   await query(`update locks set locked_until = now() where name = $1 and holder = $2`, [LOCK_NAME, holder]);
+}
+
+/** Last outcome of the POST / REPLY engine, so the dashboard can say why nothing was drafted. */
+async function recordEngineResult(kind: 'post' | 'reply', result: string, at: Date): Promise<void> {
+  await setState(`last_${kind}_result`, { result, at: at.toISOString() }).catch((err) => log.warn('could not record engine result', { err }));
 }
 
 /**
@@ -71,10 +77,12 @@ export async function runTick(deps: Deps): Promise<TickReport> {
               POST: async () => {
                 const r = await runPostEngine(deps, settings);
                 if (r.outcome === 'idle') log.debug('post engine idle', { reason: r.reason });
+                await recordEngineResult('post', r.outcome === 'idle' ? r.reason : `drafted (${r.result.status})`, now);
               },
               REPLY: async () => {
                 const r = await runReplyEngine(deps, settings);
                 if (r.outcome === 'idle') log.debug('reply engine idle', { reason: r.reason });
+                await recordEngineResult('reply', r.outcome === 'idle' ? r.reason : `drafted (${r.result.status})`, now);
               },
             }
           : {}),
