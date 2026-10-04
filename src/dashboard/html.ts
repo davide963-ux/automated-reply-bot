@@ -113,6 +113,11 @@ const views = {
         el('div', {}, 'X: ', s.x.connected ? (s.x.needsReauth ? 'NEEDS RE-AUTH (npm run x:auth)' : 'connected') : 'not connected (npm run x:auth)'),
         el('div', {}, 'LLM: ', s.llm.configured ? 'configured' : 'not configured'),
         el('div', {}, 'Waiting for approval: ', s.queue.pendingPosts + s.queue.pendingReplies, ' · UNCERTAIN: ', s.queue.uncertain, ' · eligible news: ', s.queue.eligibleNews)),
+      el('div', { className: 'card' }, el('b', {}, 'Last engine result'),
+        ...['post', 'reply'].map((k) => {
+          const e = s.engines && s.engines[k];
+          return el('div', {}, k.toUpperCase(), ': ', e ? e.result : 'not run yet', e ? el('span', { className: 'mut' }, '  (' + fmt(e.at) + ')') : '');
+        })),
       el('div', { className: 'card' }, el('b', {}, 'Scheduled jobs'), el('table', {}, s.jobs.map((j) => el('tr', {}, el('td', {}, j.job_type), el('td', {}, j.status), el('td', { className: 'mut' }, fmt(j.run_at)), el('td', { className: 'mut' }, j.last_error || ''))))),
     ];
   },
