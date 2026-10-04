@@ -26,6 +26,7 @@ export async function runDueJobs(
   handlers: Partial<Record<JobType, () => Promise<unknown>>>,
   now: Date,
   accountId?: string,
+  opts: { shouldStop?: () => boolean } = {},
 ): Promise<Array<{ job: JobType; ok: boolean; error?: string }>> {
   // A worker that died mid-job leaves RUNNING behind: release it.
   await query(
@@ -37,6 +38,8 @@ export async function runDueJobs(
   const results: Array<{ job: JobType; ok: boolean; error?: string }> = [];
   for (const job of Object.keys(handlers) as JobType[]) {
     const handler = handlers[job]!;
+    // Out of time: leave the remaining jobs PENDING (nothing is claimed), the next tick picks them up.
+    if (opts.shouldStop?.()) break;
     await query(
       `insert into scheduled_jobs (account_id, job_type, run_at) values ($1, $2, $3) on conflict do nothing`,
       [accountId ?? null, job, now],

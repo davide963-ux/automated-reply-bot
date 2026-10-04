@@ -17,6 +17,14 @@ const log = logger.child({ module: 'tick' });
 const LOCK_NAME = 'tick';
 const LOCK_TTL_SECONDS = 300;
 
+/**
+ * Wall-clock budget per tick. Vercel kills a function at 60 s (Hobby), which leaves a job RUNNING until it is
+ * declared stale. So: no new job is started after START_JOBS_MS, and the POST/REPLY engines stop starting new
+ * LLM work after ENGINE_MS (one evaluation can still take ~20 s). Unfinished work simply waits for the next tick.
+ */
+export const TICK_START_JOBS_MS = 35_000;
+export const TICK_ENGINE_MS = 25_000;
+
 export interface TickReport {
   skipped?: 'locked' | 'db_down';
   jobs: Array<{ job: JobType; ok: boolean; error?: string }>;
@@ -66,6 +74,8 @@ export async function runTick(deps: Deps): Promise<TickReport> {
     const running = settings.botStatus === 'RUNNING';
     const collect = running || settings.collectWhilePaused;
     const now = deps.now();
+    const startedAt = Date.now();
+    const engineDeadline = startedAt + TICK_ENGINE_MS;
 
     const jobs = await runDueJobs(
       {
@@ -75,12 +85,12 @@ export async function runTick(deps: Deps): Promise<TickReport> {
         ...(running
           ? {
               POST: async () => {
-                const r = await runPostEngine(deps, settings);
+                const r = await runPostEngine(deps, settings, engineDeadline);
                 if (r.outcome === 'idle') log.debug('post engine idle', { reason: r.reason });
                 await recordEngineResult('post', r.outcome === 'idle' ? r.reason : `drafted (${r.result.status})`, now);
               },
               REPLY: async () => {
-                const r = await runReplyEngine(deps, settings);
+                const r = await runReplyEngine(deps, settings, engineDeadline);
                 if (r.outcome === 'idle') log.debug('reply engine idle', { reason: r.reason });
                 await recordEngineResult('reply', r.outcome === 'idle' ? r.reason : `drafted (${r.result.status})`, now);
               },
@@ -93,6 +103,7 @@ export async function runTick(deps: Deps): Promise<TickReport> {
       },
       now,
       deps.accountId,
+      { shouldStop: () => Date.now() - startedAt > TICK_START_JOBS_MS },
     );
 
     const failed = jobs.filter((j) => !j.ok);

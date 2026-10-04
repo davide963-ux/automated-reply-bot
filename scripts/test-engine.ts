@@ -563,6 +563,10 @@ async function main(): Promise<void> {
   check('poll stores mentions + tracked tweets, never our own', polled.mentions === 3 && polled.tracked === 2 && !polled.stoppedBecause, JSON.stringify(polled));
   check('a reply to us is classified reply_to_us', (await one<string>(`select source v from x_tweets_seen where x_post_id = '101'`)) === 'reply_to_us');
   check('X identity verified and stored', (await one<string>('select x_user_id v from accounts where id = $1', [accountId])) === '42');
+  const callsBefore = JSON.stringify(llm.calls);
+  const late = await runReplyEngine(mkDeps(), await loadSettings(), Date.now() - 1);
+  check('time budget already spent: reply engine stops before any LLM call', late.outcome === 'idle' && /time budget/.test(late.reason) && JSON.stringify(llm.calls) === callsBefore, JSON.stringify(late));
+  check('...and the tweet it did not reach stays NEW for the next tick', (await one<string>(`select status v from x_tweets_seen where x_post_id = '101'`)) === 'NEW');
   const outcomes: string[] = [];
   for (let i = 0; i < 6; i++) {
     const r = await runReply();
@@ -650,6 +654,17 @@ async function main(): Promise<void> {
   check('a failing job is recorded, does not throw', failing[0]?.ok === false && failing[0]?.error === 'boom');
   check('FAILED row kept with the error, next run queued', (await one<string>(`select last_error v from scheduled_jobs where status = 'FAILED'`)) === 'boom' && Number(await one(`select count(*)::text v from scheduled_jobs where status = 'PENDING'`)) === 1);
   check('it does not re-run before it is due', (await runDueJobs({ COLLECT_NEWS: async () => { throw new Error('again'); } }, new Date(), accountId)).length === 0);
+  // time budget: a tick that is out of time starts no further job and leaves them PENDING and due
+  await reset();
+  const ran: string[] = [];
+  const stopped = await runDueJobs(
+    { COLLECT_NEWS: async () => void ran.push('COLLECT_NEWS'), MAINTENANCE: async () => void ran.push('MAINTENANCE') },
+    new Date(), accountId, { shouldStop: () => ran.length >= 1 },
+  );
+  check('out of time after one job: the other is not started', stopped.length === 1 && ran.join() === 'COLLECT_NEWS', JSON.stringify(stopped));
+  check('the skipped job is never claimed: nothing is left RUNNING', Number(await one(`select count(*)::text v from scheduled_jobs where status = 'RUNNING'`)) === 0);
+  const nextTick = await runDueJobs({ MAINTENANCE: async () => void ran.push('MAINTENANCE') }, new Date(), accountId);
+  check('next tick picks it up', nextTick.length === 1 && ran.join() === 'COLLECT_NEWS,MAINTENANCE');
   // paused behaviour
   await reset();
   await writeSetting('bot_status', 'PAUSED');

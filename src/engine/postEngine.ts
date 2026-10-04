@@ -69,7 +69,8 @@ function cleanText(t: string): string {
     .trim();
 }
 
-export async function runPostEngine(deps: Deps, s: Settings): Promise<PostEngineResult> {
+/** `deadlineMs` (epoch ms): once passed, no further candidate is sent to the LLM; the next tick continues. */
+export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number): Promise<PostEngineResult> {
   const now = deps.now();
   const idle = (reason: string): PostEngineResult => ({ outcome: 'idle', reason });
 
@@ -118,6 +119,7 @@ export async function runPostEngine(deps: Deps, s: Settings): Promise<PostEngine
   let attempts = 0;
   for (const n of candidates) {
     if (attempts >= MAX_ATTEMPTS_PER_TICK) break;
+    if (deadlineMs !== undefined && Date.now() > deadlineMs) return idle('time budget reached, continuing next tick');
     const confidence = Number(n.confidence);
     const importance = Number(n.importance_score);
     const type = pickPostType({
