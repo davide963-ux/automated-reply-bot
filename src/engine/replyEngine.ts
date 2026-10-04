@@ -55,7 +55,8 @@ async function markSeen(id: string, status: 'REPLIED' | 'IGNORED' | 'SKIPPED', r
   await query('update x_tweets_seen set status = $2, decision_reason = $3 where x_post_id = $1', [id, status, reason.slice(0, 300)]);
 }
 
-export async function runReplyEngine(deps: Deps, s: Settings): Promise<ReplyEngineResult> {
+/** `deadlineMs` (epoch ms): once passed, no NEW tweet is evaluated; the rest stay NEW for the next tick. */
+export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: number): Promise<ReplyEngineResult> {
   const now = deps.now();
   const idle = (reason: string): ReplyEngineResult => ({ outcome: 'idle', reason });
 
@@ -125,6 +126,7 @@ export async function runReplyEngine(deps: Deps, s: Settings): Promise<ReplyEngi
     if (dupParent) { await markSeen(t.x_post_id, 'SKIPPED', 'already replied to this tweet'); continue; }
 
     if (evaluations >= MAX_EVALUATIONS_PER_TICK) break;
+    if (deadlineMs !== undefined && Date.now() > deadlineMs) return idle('time budget reached, continuing next tick');
     evaluations++;
 
     // ---- conversation memory ----
