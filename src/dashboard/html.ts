@@ -6,6 +6,8 @@ export function dashboardHtml(nonce: string): string {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>crypto-x-agent</title>
+<script>window.va=window.va||function(){(window.vaq=window.vaq||[]).push(arguments);};</script>
+<script defer src="/_vercel/insights/script.js"></script>
 <style nonce="${nonce}">
 :root{--bg:#0f1115;--card:#171a21;--line:#262b36;--fg:#e6e8ee;--mut:#8b93a7;--ok:#3ecf8e;--warn:#f5a524;--bad:#f0616d;--acc:#6ea8fe}
 @media (prefers-color-scheme:light){:root{--bg:#f6f7f9;--card:#fff;--line:#dde1e8;--fg:#14171f;--mut:#5b6478}}
