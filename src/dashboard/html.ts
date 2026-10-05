@@ -26,7 +26,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-bottom:1p
 pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px}#msg{position:fixed;bottom:12px;right:12px;max-width:80vw}
 </style></head><body>
 <header><h1>crypto-x-agent</h1><span id="state" class="pill">…</span><span id="flags" class="mut"></span>
-<span class="grow"></span><button id="pause" class="bad">Pause</button><button id="resume" class="ok">Resume</button><button id="tick">Run tick now</button></header>
+<span class="grow"></span><button id="pause" class="bad">Pause</button><button id="resume" class="ok">Resume</button><button id="mind" title="Writes one post from his own mind and publishes (or queues) it now">Post from his mind</button><button id="tick">Run tick now</button></header>
 <nav id="tabs"></nav><main id="view"></main><div id="msg" class="card" hidden></div>
 <script nonce="${nonce}">
 const base = location.pathname;
@@ -61,6 +61,12 @@ async function header() {
 }
 $('#pause').onclick = act(() => api('pause', {}));
 $('#resume').onclick = act(() => api('resume', {}));
+$('#mind').onclick = act(async () => {
+  if (!confirm('Write one post from his mind and publish it now? (It still goes through the safety checks and the daily limits.)')) return;
+  const r = await api('mindpost', {});
+  const what = r.status === 'PUBLISHED' ? 'POSTED' : r.status === 'PENDING_APPROVAL' ? 'DRAFTED, waiting in Approvals' : r.status === 'DRY_RUN' ? 'DRY_RUN, would post' : r.status;
+  toast(what + ': ' + r.text);
+});
 $('#tick').onclick = act(async () => { const r = await api('tick', {}); toast('tick: ' + (r.skipped || r.jobs.map((j) => j.job + (j.ok ? '' : ' FAILED')).join(', ') || 'nothing due')); });
 
 const views = {

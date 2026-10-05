@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   const { ensureAccount } = require('../src/db/accounts') as typeof import('../src/db/accounts');
   const { loadSettings, writeSetting } = require('../src/config/settings') as typeof import('../src/config/settings');
   const { collectNews } = require('../src/news/collector') as typeof import('../src/news/collector');
-  const { runPostEngine } = require('../src/engine/postEngine') as typeof import('../src/engine/postEngine');
+  const { runPostEngine, createMindPost } = require('../src/engine/postEngine') as typeof import('../src/engine/postEngine');
   const { runReplyEngine } = require('../src/engine/replyEngine') as typeof import('../src/engine/replyEngine');
   const { pollX } = require('../src/engine/ingest') as typeof import('../src/engine/ingest');
   const { publishRow } = require('../src/engine/publisher') as typeof import('../src/engine/publisher');
@@ -821,6 +821,31 @@ async function main(): Promise<void> {
   const ev = (await (await get('events&limit=5')).json()) as { events: unknown[] };
   check('events API', ev.events.length > 0 && ev.events.length <= 5);
   check('unknown route -> 404', (await get('nope')).status === 404);
+  // ---- "Post from his mind" button ----
+  await writeSetting('post_mix', { news: 100, thoughts: 50, random: 50 });
+  llm.original = (seed) => `Honest take on ${seed}: it is mostly vibes and wallets.`;
+  check('mindpost without the x-dashboard header is refused (CSRF)', (await post('mindpost', {}, {})).status === 403);
+  const timerBefore = await one(`select value::text v from bot_state where key = 'next_post_not_before'`);
+  const mp = await post('mindpost', {});
+  const mpBody = (await mp.json()) as { ok: boolean; status: string; text: string };
+  check('the button writes a post from his mind and queues it (approval mode here)', mp.status === 200 && mpBody.ok && mpBody.status === 'PENDING_APPROVAL' && /Honest take on/.test(mpBody.text), JSON.stringify(mpBody));
+  check('...it did not move the scheduled-post timer (manual posts do not delay the schedule)', (await one(`select value::text v from bot_state where key = 'next_post_not_before'`)) === timerBefore);
+  check('...and it is stored as an original post with no source', (await one<string>(`select topic v from posts where status = 'PENDING_APPROVAL' and news_item_id is null order by created_at desc limit 1`))?.startsWith('mind:') === true);
+  await writeSetting('bot_status', 'PAUSED');
+  const mpPaused = await post('mindpost', {});
+  check('paused: the button says so instead of posting', mpPaused.status === 400 && /PAUSED/.test(((await mpPaused.json()) as { error: string }).error));
+  await writeSetting('bot_status', 'RUNNING');
+  llm.originalAction = 'SKIP';
+  const mpSkip = await post('mindpost', {});
+  check('the model has nothing good three times: a clear message, no post', mpSkip.status === 400 && /try again/.test(((await mpSkip.json()) as { error: string }).error));
+  llm.originalAction = 'POST';
+  const direct = await createMindPost(mkDeps({ flags: { dryRun: false, autonomous: true } }), await loadSettings());
+  check('in autonomous mode the same button publishes straight to X', direct.ok && direct.status === 'PUBLISHED' && fx.posts.some((p) => p.text === direct.text));
+  await writeSetting('post_mix', { news: 100, thoughts: 0, random: 0 });
+  await writeSetting('max_posts_per_day', 2);
+  const full = await createMindPost(mkDeps({ flags: { dryRun: false, autonomous: true } }), await loadSettings());
+  check('daily post limit used (queued ones count): the button refuses', !full.ok && /limit|DAILY|cannot post/i.test(full.error), JSON.stringify(full));
+  await writeSetting('max_posts_per_day', 6);
 
   // ---- Rules tab ----
   type RulesApi = { builtin: Array<{ id: string; locked: boolean; disabled: boolean }>; custom: Array<{ id: string; kind: string; text: string }> };

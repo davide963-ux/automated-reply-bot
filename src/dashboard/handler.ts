@@ -7,6 +7,7 @@ import { migrationStatus, runMigrations } from '../db/migrate';
 import { CUSTOM_RULE_KINDS, SETTING_SCHEMAS, customRuleSchema, loadSettings, writeSetting, type CustomRule } from '../config/settings';
 import { SWITCHABLE_RULE_IDS, builtinCatalog } from '../safety/rules';
 import { approveItem, createManualPost, pauseBot, rejectItem, resumeBot } from '../engine/control';
+import { createMindPost } from '../engine/postEngine';
 import { collectNews } from '../news/collector';
 import type { Deps } from '../engine/deps';
 import { runTick } from '../engine/tick';
@@ -287,6 +288,10 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
           const next = body.disabled === true ? [...new Set([...st.disabledBuiltinRules, id])] : st.disabledBuiltinRules.filter((x) => x !== id);
           await writeSetting('disabled_builtin_rules', next);
           return send(res, 200, { ok: true });
+        }
+        case 'mindpost': {
+          const r = await createMindPost(deps, await loadSettings());
+          return send(res, r.ok ? 200 : 400, r);
         }
         case 'tick':
           return send(res, 200, await runTick(deps));
