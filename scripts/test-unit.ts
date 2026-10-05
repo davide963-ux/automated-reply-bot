@@ -503,6 +503,15 @@ async function main(): Promise<void> {
   check('every mode forbids code and claiming to be human', [personaSystem('x'), personaSystem('x', 'general', true), personaSystem('x', 'general', false, [], true)].every((p) => /NEVER write code/.test(p) && /Never claim to be human/.test(p)));
   check('post_mix / seeds settings validate', SETTING_SCHEMAS.post_mix.safeParse({ news: 1, thoughts: 0, random: 0 }).success && !SETTING_SCHEMAS.post_mix.safeParse({ news: 0, thoughts: 0, random: 0 }).success && !SETTING_SCHEMAS.thought_seeds.safeParse([]).success);
 
+  section('judge prompt');
+  let judgeSystem = '';
+  const spyLlm = { complete: async (r: { system: string; purpose: string }) => { judgeSystem = r.system; return { text: '{"supported":true,"unsupported_claims":[],"risk":"LOW","risk_reasons":[]}', inputTokens: 0, outputTokens: 0 }; } };
+  const { judgeContent } = require('../src/llm/content') as typeof import('../src/llm/content');
+  await judgeContent(spyLlm as never, { kind: 'reply', text: 'x', material: 'y' });
+  check('reviewer for replies accepts opinions and general knowledge, rejects only specific checkable claims', /Opinions, analysis, explanations/.test(judgeSystem) && /specific, checkable fact/.test(judgeSystem) && !/when unsure, mark it unsupported/.test(judgeSystem));
+  await judgeContent(spyLlm as never, { kind: 'post', text: 'x', material: 'y' });
+  check('reviewer for news posts stays conservative (grounded in the story)', /when unsure, mark it unsupported/.test(judgeSystem));
+
   finish('unit tests');
 }
 
