@@ -879,9 +879,15 @@ async function main(): Promise<void> {
   check('...stored as an original post (topic starts with mind:, no sources) and written from a topic seed', /^mind:/.test(m1?.topic ?? '') && m1?.content_type === 'flexible' && /Honest take on/.test(m1?.content ?? ''));
   check('...and it spaced the next post like any other', Boolean(await one(`select value::text v from bot_state where key = 'next_post_not_before'`)));
   await clearGap();
+  llm.original = (seed) => `On ${seed}: a stablecoin that drifts to say $0.95 is a depeg, not a disaster.`;
+  const withExample = await runPost();
+  check('original post with an illustrative number is no longer blocked by the old numbers-must-be-in-the-source rule', withExample.outcome === 'posted' && fx.posts.length === 2, JSON.stringify(withExample));
+  await clearGap();
   llm.original = (seed) => `Hot take on ${seed}: this will 10x by 2027 $DOGE`;
+  llm.judge = { supported: false, risk: 'LOW' };
   const badOriginal = await runPost();
-  check('original post with a number and a $ticker is rejected by the fact gate (nothing published)', badOriginal.outcome === 'idle' && fx.posts.length === 1 && /numbers not in the source|tickers not in the source/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
+  check('...a fabricated claim is still stopped, now by the AI reviewer (nothing published)', badOriginal.outcome === 'idle' && fx.posts.length === 2 && /unsupported claims/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
+  llm.judge = { supported: true, risk: 'LOW' };
   await clearGap();
   llm.original = () => 'Fix: wrap it in `useEffect` and run npm install react';
   check('original post with code is rejected by the no-code gate', (await runPost()).outcome === 'idle' && /code in a reply\/post/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
@@ -942,6 +948,20 @@ async function main(): Promise<void> {
   await pollX(mkDeps(), await loadSettings());
   await runReply();
   check('a reply with code in it is rejected by the gate even if the model ignores the rule', (await one<string>(`select status v from replies order by created_at desc limit 1`)) === 'REJECTED' && fx.posts.length === 0);
+  await reset();
+  fx.mentions = [gen('741', '@testbot can you explain what a stablecoin depeg is?')];
+  llm.reply = () => ({ decision: 'REPLY', confidence: 0.9, reason: 'q', style: 'neutral', topic: 'stablecoins', domain: 'crypto', text: 'When a stablecoin loses its $1 peg, its price drifts (say to $0.95 or $1.05). Usually supply/demand imbalance or reserve worries.' });
+  await pollX(mkDeps(), await loadSettings());
+  await runReply(rep);
+  check('a genuine reply with illustrative numbers ($1 peg, say $0.95) is no longer rejected for "numbers not in the source"', (await one<string>(`select status v from replies where parent_text like '%depeg%'`)) === 'PUBLISHED');
+  await reset();
+  llm.judge = { supported: false, risk: 'LOW' };
+  llm.reply = () => ({ decision: 'REPLY', confidence: 0.9, reason: 'q', style: 'neutral', topic: 'stablecoins', domain: 'crypto', text: 'The Tether reserve fell 40% last week after a secret audit.' });
+  fx.mentions = [gen('742', '@testbot can you explain what a stablecoin depeg is?')];
+  await pollX(mkDeps(), await loadSettings());
+  await runReply(rep);
+  check('...while a reply the AI reviewer calls fabricated is still rejected', (await one<string>(`select status v from replies where parent_text like '%depeg%'`)) === 'REJECTED');
+  llm.judge = { supported: true, risk: 'LOW' };
   // ---- over-long and empty drafts must never crash the job (the database caps content at 280 characters) ----
   await reset();
   fx.mentions = [gen('731', '@testbot what does a hardware wallet do?'), gen('732', '@testbot what is a stablecoin exactly?')];

@@ -73,7 +73,11 @@ export async function runSafetyGate(llm: LlmClient, input: GateInput): Promise<S
   let r = record('length', checkLength(input.text));
   if (!r.ok) return stop('length', r.detail);
 
-  r = record('facts', checkFacts(input.text, input.material));
+  // News posts must be grounded: every number and $ticker has to appear in the story. Replies and original posts have no
+  // story to check against, so that blunt rule would reject ordinary explanations ("a stablecoin drifts to $0.95").
+  // For those, the AI reviewer below judges whether a claim is fabricated or just an example / common knowledge.
+  const lenientFacts = input.kind === 'reply' || input.original === true;
+  r = record('facts', lenientFacts ? { ok: true, detail: 'skipped for replies and original posts (the AI reviewer checks claims)' } : checkFacts(input.text, input.material));
   if (!r.ok) return stop('factuality', r.detail);
 
   r = record('duplicate', checkDuplicate(input.text, input.recentTexts, input.kind === 'reply' ? 0.7 : 0.6));
