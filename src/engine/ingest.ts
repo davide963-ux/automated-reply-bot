@@ -63,7 +63,8 @@ export interface PollResult {
 }
 
 /** Pull mentions, tracked accounts and (optionally) keyword search into the reply work queue. */
-export async function pollX(deps: Deps, s: Settings): Promise<PollResult> {
+/** `deadlineMs` (epoch ms): once passed, no further tracked account is read; the rest is picked up by the next poll. */
+export async function pollX(deps: Deps, s: Settings, deadlineMs?: number): Promise<PollResult> {
   const out: PollResult = { mentions: 0, tracked: 0, search: 0 };
   try {
     const me = await ensureXIdentity(deps);
@@ -81,6 +82,7 @@ export async function pollX(deps: Deps, s: Settings): Promise<PollResult> {
       const ids = (await getState<Record<string, string>>('x_user_ids')) ?? {};
       const cursors = (await getState<Record<string, string>>('tracked_since')) ?? {};
       for (const username of s.trackedAccounts.slice(0, 10)) {
+        if (deadlineMs !== undefined && Date.now() > deadlineMs) { out.stoppedBecause = 'time budget reached, continuing next poll'; break; }
         let uid = ids[username.toLowerCase()];
         if (!uid) {
           const u = await deps.x.resolveUsername(username);
