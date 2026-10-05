@@ -1,6 +1,7 @@
 import { query } from '../db/client';
 import { getState, setState } from '../db/state';
 import type { Settings } from '../config/settings';
+import { withDeadline } from '../llm/client';
 import { generateOriginalPost, generatePost, type OriginalKind, type PostType } from '../llm/content';
 import { LlmUnavailableError } from '../llm/client';
 import { logger } from '../lib/logger';
@@ -92,6 +93,125 @@ function cleanText(t: string): string {
     .trim();
 }
 
+interface RecentPost { content: string; content_type: string; topic: string | null; created_at: Date }
+interface PostContext { recentPosts: RecentPost[]; recentTexts: string[]; now: Date }
+
+async function loadPostContext(deps: Deps): Promise<PostContext> {
+  const recentPosts = (
+    await query<RecentPost>(
+      `select content, content_type, topic, created_at from posts
+        where account_id = $1 and status not in ('REJECTED','FAILED') order by created_at desc limit 12`,
+      [deps.accountId],
+    )
+  ).rows;
+  return { recentPosts, recentTexts: await loadRecentTexts(deps.accountId), now: deps.now() };
+}
+
+/** After a post was created: publish/queue it and (for scheduled posts) space out the next one. */
+async function finishPost(deps: Deps, s: Settings, now: Date, postId: string, gateReport: Parameters<typeof routeAfterSafety>[3], schedule: boolean): Promise<PostEngineResult> {
+  const result = await routeAfterSafety(deps, 'post', postId, gateReport);
+  if (schedule && ['PUBLISHED', 'DRY_RUN', 'PENDING_APPROVAL', 'UNCERTAIN'].includes(result.status)) {
+    const gapMin = computeNextPostGapMinutes(s, deps.random());
+    await setState(NEXT_POST_KEY, new Date(now.getTime() + gapMin * 60_000).toISOString());
+  }
+  return { outcome: 'posted', result, postId };
+}
+
+/**
+ * One draft from the account's own mind: generate -> safety gate -> store -> publish or queue.
+ * null = nothing was posted (the model had nothing good, or the gate rejected it): the caller may try again.
+ */
+async function originalAttempt(deps: Deps, s: Settings, kind: OriginalKind, ctx: PostContext, schedule: boolean): Promise<PostEngineResult | null> {
+  const seeds = kind === 'thought' ? s.thoughtSeeds : s.randomSeeds;
+  const used = new Set(ctx.recentPosts.map((p) => p.topic));
+  const fresh = seeds.filter((x) => !used.has(`mind:${x}`));
+  const pool = fresh.length > 0 ? fresh : seeds;
+  const seed = pool[Math.min(pool.length - 1, Math.floor(deps.random() * pool.length))]!;
+
+  let draft;
+  try {
+    draft = await generateOriginalPost(deps.llm, {
+      personality: s.personality, kind, seed, recentPosts: ctx.recentPosts.map((p) => p.content), maxChars: 270,
+      instructions: instructionsFor(s.customRules, 'post'),
+    });
+  } catch (err) {
+    log.warn('original generation failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
+    await logEvent({ action: 'ERROR', decision: 'GENERATION_FAILED', reason: (err as Error).message, result: 'retry later' });
+    return { outcome: 'idle', reason: 'LLM unavailable' };
+  }
+  if (draft.action === 'SKIP' || !draft.text) return null; // nothing good: stay silent rather than post filler
+
+  const text = cleanText(draft.text);
+  if (!text) return null;
+  // Material is only the topic seed. Replies and original posts skip the numbers-in-source rule; the AI reviewer judges claims.
+  const gateReport = await runSafetyGate(deps.llm, {
+    kind: 'post', text, material: seed, recentTexts: ctx.recentTexts, original: true, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules,
+  });
+  if (!gateReport.ok && gateReport.retryable) {
+    await logEvent({ action: 'ERROR', decision: 'GATE_RETRYABLE', reason: gateReport.reason, result: 'retry later' });
+    return { outcome: 'idle', reason: 'safety judge unavailable' };
+  }
+
+  const inserted = await query<{ id: string }>(
+    `insert into posts (account_id, content, content_type, topic, sources, news_item_id, content_hash, idempotency_key, status, rejection_reason)
+     values ($1,$2,'flexible',$3,'[]'::jsonb,null,$4,$5,$6,$7)
+     on conflict (idempotency_key) do nothing returning id`,
+    [
+      deps.accountId, text.slice(0, 280), `mind:${seed}`, contentHash(text), sha256(`${deps.accountId}|post|mind|${randomUUID()}`),
+      gateReport.ok ? 'DRAFT' : 'REJECTED',
+      gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
+    ],
+  );
+  const postId = inserted.rows[0]?.id;
+  if (!postId) return null;
+
+  if (!gateReport.ok) {
+    await query('update posts set safety_report = $2, risk_level = $3 where id = $1', [postId, JSON.stringify(gateReport), gateReport.riskLevel]);
+    await logEvent({
+      action: 'CONTENT_REJECTED', inputRef: postId, decision: gateReport.stage, reason: gateReport.reason,
+      result: 'original post rejected by safety gate', details: { checks: gateReport.checks, kind, seed },
+    });
+    return null;
+  }
+  await logEvent({ action: 'POST_GENERATED', inputRef: postId, decision: kind, reason: draft.reason, result: schedule ? 'passed safety gate' : 'passed safety gate (manual button)', details: { kind, seed, manual: !schedule } });
+  return finishPost(deps, s, ctx.now, postId, gateReport, schedule);
+}
+
+export type MindPostResult = { ok: true; status: string; text: string; postId: string } | { ok: false; error: string };
+
+/**
+ * The dashboard button: write one post from the account's own mind right now.
+ * Same generator, same safety gate, same caps and the same publisher as the scheduled posts. It skips only the waiting
+ * (spacing, active hours) and does not move the next scheduled post.
+ */
+export async function createMindPost(rawDeps: Deps, s: Settings): Promise<MindPostResult> {
+  if (s.botStatus !== 'RUNNING') return { ok: false, error: 'the bot is PAUSED: press Resume first' };
+  const slot = await peekPublishSlot(rawDeps.accountId, 'post');
+  if (slot !== 'OK') return { ok: false, error: `cannot post now: ${slot}` };
+  if ((await committedToday(rawDeps.accountId, 'posts')) >= Math.min(s.maxPostsPerDay, s.maxTotalPerDay)) {
+    return { ok: false, error: 'the daily post limit is used up (queued posts count)' };
+  }
+  // A serverless function is killed at 60 s: every Grok call is cut short before that.
+  const deps: Deps = { ...rawDeps, llm: withDeadline(rawDeps.llm, Date.now() + 45_000) };
+  const ctx = await loadPostContext(deps);
+
+  const t = s.postMix.thoughts;
+  const r = s.postMix.random;
+  const total = t + r;
+  const first: OriginalKind = total === 0 ? (deps.random() < 0.5 ? 'thought' : 'random') : deps.random() * total < t ? 'thought' : 'random';
+  const second: OriginalKind = first === 'thought' ? 'random' : 'thought';
+
+  for (const kind of [first, second, first]) {
+    const res = await originalAttempt(deps, s, kind, ctx, false);
+    if (res?.outcome === 'idle') return { ok: false, error: res.reason };
+    if (res?.outcome === 'posted') {
+      const text = (await query<{ content: string }>('select content from posts where id = $1', [res.postId])).rows[0]?.content ?? '';
+      return { ok: true, status: res.result.status, text, postId: res.postId };
+    }
+  }
+  return { ok: false, error: 'the model had nothing good or the safety gate rejected 3 drafts in a row: try again' };
+}
+
 /** `deadlineMs` (epoch ms): once passed, no further candidate is sent to the LLM; the next tick continues. */
 export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number): Promise<PostEngineResult> {
   const now = deps.now();
@@ -143,16 +263,6 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
 
   let attempts = 0; // LLM drafts started in this tick, across all kinds
   const spent = () => deadlineMs !== undefined && Date.now() > deadlineMs;
-
-  /** After a post was created: publish/queue it and schedule the next one. */
-  const finish = async (postId: string, gateReport: Parameters<typeof routeAfterSafety>[3]): Promise<PostEngineResult> => {
-    const result = await routeAfterSafety(deps, 'post', postId, gateReport);
-    if (['PUBLISHED', 'DRY_RUN', 'PENDING_APPROVAL', 'UNCERTAIN'].includes(result.status)) {
-      const gapMin = computeNextPostGapMinutes(s, deps.random());
-      await setState(NEXT_POST_KEY, new Date(now.getTime() + gapMin * 60_000).toISOString());
-    }
-    return { outcome: 'posted', result, postId };
-  };
 
   /** News-based post. null = nothing was posted (not an LLM outage), so the next kind may be tried. */
   const tryNews = async (): Promise<PostEngineResult | null> => {
@@ -244,7 +354,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
         action: 'POST_GENERATED', inputRef: postId, decision: type, reason: draft.reason, confidence,
         result: 'passed safety gate', details: { news: n.url },
       });
-      return finish(postId, gateReport);
+      return finishPost(deps, s, now, postId, gateReport, true);
     }
     return null;
   };
@@ -253,60 +363,8 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
   const tryOriginal = async (kind: OriginalKind): Promise<PostEngineResult | null> => {
     if (attempts >= MAX_ATTEMPTS_PER_TICK) return null;
     if (spent()) return idle('time budget reached, continuing next tick');
-    const seeds = kind === 'thought' ? s.thoughtSeeds : s.randomSeeds;
-    const used = new Set(recentPosts.map((p) => p.topic));
-    const fresh = seeds.filter((x) => !used.has(`mind:${x}`));
-    const pool = fresh.length > 0 ? fresh : seeds;
-    const seed = pool[Math.min(pool.length - 1, Math.floor(deps.random() * pool.length))]!;
-
     attempts++;
-    let draft;
-    try {
-      draft = await generateOriginalPost(deps.llm, {
-        personality: s.personality, kind, seed, recentPosts: recentPosts.map((p) => p.content), maxChars: 270,
-        instructions: instructionsFor(s.customRules, 'post'),
-      });
-    } catch (err) {
-      log.warn('original generation failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
-      await logEvent({ action: 'ERROR', decision: 'GENERATION_FAILED', reason: (err as Error).message, result: 'retry later' });
-      return idle('LLM unavailable');
-    }
-    if (draft.action === 'SKIP' || !draft.text) return null; // nothing good: stay silent rather than post filler
-
-    const text = cleanText(draft.text);
-    if (!text) return null;
-    // Material is only the topic seed: any number or $ticker the model adds is rejected by the fact check.
-    const gateReport = await runSafetyGate(deps.llm, {
-      kind: 'post', text, material: seed, recentTexts, original: true, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules,
-    });
-    if (!gateReport.ok && gateReport.retryable) {
-      await logEvent({ action: 'ERROR', decision: 'GATE_RETRYABLE', reason: gateReport.reason, result: 'retry later' });
-      return idle('safety judge unavailable');
-    }
-
-    const inserted = await query<{ id: string }>(
-      `insert into posts (account_id, content, content_type, topic, sources, news_item_id, content_hash, idempotency_key, status, rejection_reason)
-       values ($1,$2,'flexible',$3,'[]'::jsonb,null,$4,$5,$6,$7)
-       on conflict (idempotency_key) do nothing returning id`,
-      [
-        deps.accountId, text.slice(0, 280), `mind:${seed}`, contentHash(text), sha256(`${deps.accountId}|post|mind|${randomUUID()}`),
-        gateReport.ok ? 'DRAFT' : 'REJECTED',
-        gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
-      ],
-    );
-    const postId = inserted.rows[0]?.id;
-    if (!postId) return null;
-
-    if (!gateReport.ok) {
-      await query('update posts set safety_report = $2, risk_level = $3 where id = $1', [postId, JSON.stringify(gateReport), gateReport.riskLevel]);
-      await logEvent({
-        action: 'CONTENT_REJECTED', inputRef: postId, decision: gateReport.stage, reason: gateReport.reason,
-        result: 'original post rejected by safety gate', details: { checks: gateReport.checks, kind, seed },
-      });
-      return null;
-    }
-    await logEvent({ action: 'POST_GENERATED', inputRef: postId, decision: kind, reason: draft.reason, result: 'passed safety gate', details: { kind, seed } });
-    return finish(postId, gateReport);
+    return originalAttempt(deps, s, kind, { recentPosts, recentTexts, now }, true);
   };
 
   for (const kind of kinds) {
