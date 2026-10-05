@@ -472,3 +472,7 @@ src/worker.ts               long-running mode      src/index.ts   CLI (status / 
 api/tick.ts, api/dashboard.ts, api/x-connect.ts, api/x-callback.ts   Vercel functions
 scripts/                    x-auth, x-test-post, test-unit, test-limits, test-engine
 ```
+
+## Dashboard login (Toad Guru)
+
+The dashboard no longer uses the browser's grey password popup. Opening `/api/dashboard` shows the animated **Toad Guru** login page. The password is `DASHBOARD_TOKEN`. A correct password sets a signed session cookie (`toad_session`: HttpOnly, SameSite=Strict, Secure on https, 7 days). Changing `DASHBOARD_TOKEN` logs everyone out. After 8 wrong passwords a client is locked out for 15 minutes. Scripts and tools can still send `Authorization: Bearer <token>` (or HTTP Basic). **Log out** is in the dashboard header. The character images live in `public/` (`toad-guru.png`, `toad-icon.png`).
