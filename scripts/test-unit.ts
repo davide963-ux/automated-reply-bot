@@ -454,6 +454,19 @@ async function main(): Promise<void> {
   check('post mode keeps the strict only-the-material rule', /ONLY facts present in the provided material/.test(personaSystem('x', 'crypto')) && !/general knowledge/.test(personaSystem('x', 'crypto')));
   check('reply mode still bans advice, politics and invented numbers', /No financial advice/.test(sysReply) && /No politics/.test(sysReply) && /never invent them/.test(sysReply));
 
+  section('custom rules');
+  const CU = require('../src/safety/custom') as typeof import('../src/safety/custom');
+  const rule = (kind: 'block_output' | 'skip_input' | 'require_approval' | 'instruction', text: string, target: 'post' | 'reply' | 'both' = 'both') => ({ id: 'abcdef12', kind, target, text });
+  check('phrases match case-insensitively on word boundaries', CU.phraseRegex('moon').test('To the MOON') && !CU.phraseRegex('moon').test('honeymooner'));
+  check('regex characters in a phrase are literal (cannot hang or break)', CU.phraseRegex('a+b(').test('see a+b( here') && !CU.phraseRegex('.*').test('anything'));
+  check('target filter: a reply-only rule does not touch posts', CU.findCustomMatch([rule('block_output', 'moon', 'reply')], 'block_output', 'post', 'moon') === undefined && CU.findCustomMatch([rule('block_output', 'moon', 'reply')], 'block_output', 'reply', 'moon') !== undefined);
+  check('kind filter: a skip rule never blocks output', CU.findCustomMatch([rule('skip_input', 'moon')], 'block_output', 'post', 'moon') === undefined);
+  check('instructions are collected per target', CU.instructionsFor([rule('instruction', 'Be brief', 'reply'), rule('instruction', 'No jokes', 'post')], 'reply').join() === 'Be brief');
+  check('persona prompt carries owner instructions and still says the hard rules win', /OWNER INSTRUCTIONS/.test(personaSystem('x', 'crypto', false, ['Be brief'])) && /HARD RULES above always win/.test(personaSystem('x', 'crypto', false, ['Be brief'])) && !/OWNER INSTRUCTIONS/.test(personaSystem('x')));
+  check('a disabled switchable rule stops forcing approval; HIGH rules cannot be disabled', R.riskFloorFor(['risk.politics'], 'new election results').level === 'LOW' && R.riskFloorFor(R.SWITCHABLE_RULE_IDS, 'founder dies').level === 'HIGH');
+  check('exactly the 4 approval-only built-ins are switchable', R.SWITCHABLE_RULE_IDS.length === 4 && R.builtinCatalog().filter((b) => !b.locked).length === 4);
+  check('tweet prefilter honours a skip rule', prefilterTweet({ text: 'soon wen moon for everyone', created_at_x: new Date(), source: 'tracked_account' }, new Date(), [rule('skip_input', 'wen moon', 'reply')])?.includes('your rule') === true);
+
   finish('unit tests');
 }
 

@@ -3,13 +3,15 @@ import type { LlmClient } from '../llm/client';
 import { judgeContent } from '../llm/content';
 import { logger } from '../lib/logger';
 import {
-  checkAdvice, checkDuplicate, checkFacts, checkLength, checkSpam, maxRisk, riskFloor,
+  checkAdvice, checkDuplicate, checkFacts, checkLength, checkSpam, maxRisk, riskFloorFor,
   type RiskLevel,
 } from './rules';
+import { findCustomMatch } from './custom';
+import type { CustomRule } from '../config/settings';
 
 const log = logger.child({ module: 'safety' });
 
-export type GateStage = 'length' | 'factuality' | 'duplicate' | 'spam' | 'risk' | 'judge_error' | 'passed';
+export type GateStage = 'length' | 'factuality' | 'duplicate' | 'spam' | 'custom' | 'risk' | 'judge_error' | 'passed';
 
 export interface SafetyReport {
   ok: boolean;
@@ -44,6 +46,10 @@ export interface GateInput {
   recentTexts: string[];
   /** Extra text (e.g. the parent tweet) to scan for risk signals. */
   riskContext?: string[];
+  /** Owner rules from the Rules tab (block_output / require_approval apply here). */
+  customRules?: CustomRule[];
+  /** Switchable built-in rules the owner turned off. */
+  disabledBuiltinRules?: string[];
 }
 
 /**
@@ -77,7 +83,16 @@ export async function runSafetyGate(llm: LlmClient, input: GateInput): Promise<S
   r = record('advice', checkAdvice(input.text));
   if (!r.ok) return stop('risk', r.detail, { riskLevel: 'HIGH' });
 
-  const floor = riskFloor(input.text, input.material, ...(input.riskContext ?? []));
+  const blocked = findCustomMatch(input.customRules, 'block_output', input.kind, input.text);
+  r = record('custom_block', blocked ? { ok: false, detail: `your rule blocks "${blocked.text}"` } : { ok: true, detail: 'ok' });
+  if (!r.ok) return stop('custom', r.detail);
+
+  const floor = riskFloorFor(input.disabledBuiltinRules ?? [], input.text, input.material, ...(input.riskContext ?? []));
+  const approvalRule = findCustomMatch(input.customRules, 'require_approval', input.kind, input.text, input.material, ...(input.riskContext ?? []));
+  if (approvalRule) {
+    floor.reasons.push(`your rule requires approval for "${approvalRule.text}"`);
+    floor.level = maxRisk(floor.level, 'MEDIUM');
+  }
   record('risk_floor', { ok: floor.level !== 'HIGH', detail: `${floor.level} ${floor.reasons.join(', ')}`.trim() });
   if (floor.level === 'HIGH') return stop('risk', `high-risk content: ${floor.reasons.join(', ')}`, { riskLevel: 'HIGH' });
 

@@ -32,7 +32,30 @@ export interface Settings {
   newsMaxAgeHours: number;
   includeSourceLink: boolean;
   approvalTtlHours: number;
+  customRules: CustomRule[];
+  /** ids of switchable built-in rules the owner turned off (see builtinCatalog) */
+  disabledBuiltinRules: string[];
 }
+
+export const CUSTOM_RULE_KINDS = ['block_output', 'skip_input', 'require_approval', 'instruction'] as const;
+
+/** Owner rule from the Rules tab. For instruction rules `text` is a sentence; otherwise it is a phrase. */
+export interface CustomRule {
+  id: string;
+  kind: (typeof CUSTOM_RULE_KINDS)[number];
+  /** post = posts and news stories, reply = replies and tweets, both = either */
+  target: 'post' | 'reply' | 'both';
+  text: string;
+}
+
+export const customRuleSchema = z
+  .object({
+    id: z.string().regex(/^[a-f0-9]{8}$/),
+    kind: z.enum(CUSTOM_RULE_KINDS),
+    target: z.enum(['post', 'reply', 'both']),
+    text: z.string().trim().min(2).max(300),
+  })
+  .refine((r) => r.kind === 'instruction' || r.text.length <= 100, { message: 'a phrase can be at most 100 characters' });
 
 const win = z.object({
   start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
@@ -63,6 +86,8 @@ export const SETTING_SCHEMAS = {
   news_max_age_hours: z.number().int().min(1).max(72),
   include_source_link: z.boolean(),
   approval_ttl_hours: z.number().int().min(1).max(168),
+  custom_rules: z.array(customRuleSchema).max(100),
+  disabled_builtin_rules: z.array(z.string().max(40)).max(50),
 } as const;
 
 export type SettingKey = keyof typeof SETTING_SCHEMAS;
@@ -100,6 +125,8 @@ export async function loadSettings(): Promise<Settings> {
     newsMaxAgeHours: pick('news_max_age_hours', 12),
     includeSourceLink: pick('include_source_link', false),
     approvalTtlHours: pick('approval_ttl_hours', 12),
+    customRules: pick('custom_rules', []),
+    disabledBuiltinRules: pick('disabled_builtin_rules', []),
   };
 }
 

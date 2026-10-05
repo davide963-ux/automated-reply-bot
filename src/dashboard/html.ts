@@ -43,7 +43,7 @@ function toast(t, bad) { const m = $('#msg'); m.hidden = false; m.textContent = 
 const act = (fn) => async () => { try { await fn(); await show(tab); } catch (e) { toast(e.message, true); } };
 const bar = (n, max) => el('div', { className: 'bar' }, el('i', { style: 'width:' + Math.min(100, max ? n / max * 100 : 0) + '%' }));
 const fmt = (d) => d ? new Date(d).toLocaleString() : '';
-const TABS = ['Setup', 'Overview', 'Approvals', 'Activity', 'News', 'Posts', 'Replies', 'Settings'];
+const TABS = ['Setup', 'Overview', 'Approvals', 'Activity', 'News', 'Posts', 'Replies', 'Rules', 'Settings'];
 let tab = 'Overview';
 let lastCollect = null;
 TABS.forEach((t) => $('#tabs').append(el('button', { textContent: t, onclick: () => show(t) })));
@@ -169,11 +169,36 @@ const views = {
     if (!items.length) return [el('div', { className: 'card mut' }, 'No replies yet.')];
     return [el('div', { className: 'card' }, el('table', {}, items.map((p) => el('tr', {}, el('td', { className: p.status }, p.status), el('td', { className: 'mut' }, p.parent_text || ''), el('td', {}, p.content), el('td', { className: 'mut' }, p.rejection_reason || p.publish_error || '')))))];
   },
+  async Rules() {
+    const r = await api('rules');
+    const LABEL = { block_output: 'Block: reject any draft containing the phrase', skip_input: 'Skip: ignore tweets / news containing the phrase (free, before Grok)', require_approval: 'Approval: anything touching the phrase waits for me', instruction: 'Instruction: a sentence added to the Grok prompt' };
+    const TARGET = { post: 'posts and news', reply: 'replies and tweets', both: 'everything' };
+    const kind = el('select', {}, ...r.kinds.map((k) => el('option', { value: k, textContent: LABEL[k] })));
+    const target = el('select', {}, ...Object.keys(TARGET).map((k) => el('option', { value: k, textContent: TARGET[k] })));
+    const text = el('input', { placeholder: 'phrase (max 100 characters) or, for an instruction, a sentence' });
+    const add = el('div', { className: 'card' }, el('b', {}, 'Add a rule'),
+      el('div', { className: 'mut' }, 'Phrases are matched as plain text, ignoring case. Instructions can never override the built-in hard rules.'),
+      el('div', { className: 'row' }, kind, target), text,
+      el('div', {}, el('button', { className: 'ok', textContent: 'Add rule', onclick: act(async () => { await api('rule_add', { kind: kind.value, target: target.value, text: text.value }); toast('rule added'); }) })));
+    const mine = el('div', { className: 'card' }, el('b', {}, 'Your rules (' + r.custom.length + ')'),
+      r.custom.length === 0 ? el('div', { className: 'mut' }, 'none yet') : el('table', {}, r.custom.map((c) => el('tr', {},
+        el('td', {}, LABEL[c.kind].split(':')[0]), el('td', { className: 'mut' }, TARGET[c.target]), el('td', {}, c.text),
+        el('td', {}, el('button', { className: 'bad', textContent: 'Remove', onclick: act(async () => { await api('rule_remove', { id: c.id }); toast('rule removed'); }) }))))));
+    const groups = {};
+    r.builtin.forEach((b) => { (groups[b.group] = groups[b.group] || []).push(b); });
+    const builtin = el('div', {}, el('h3', {}, 'Built-in rules'),
+      el('div', { className: 'mut' }, 'Generated from the code. Locked rules protect the account and can only be changed in code. Switchable ones only force approval, so you can turn them off (Grok can still raise a draft to MEDIUM risk on its own).'),
+      ...Object.keys(groups).map((g) => el('div', { className: 'card' }, el('b', {}, g),
+        el('table', {}, groups[g].map((b) => el('tr', {},
+          el('td', { className: 'pill' }, b.effect), el('td', {}, b.what),
+          el('td', {}, b.locked ? el('span', { className: 'mut' }, 'locked') : el('button', { textContent: b.disabled ? 'Turn on' : 'Turn off', className: b.disabled ? 'ok' : '', onclick: act(async () => { await api('builtin_toggle', { id: b.id, disabled: !b.disabled }); toast(b.disabled ? 'rule on' : 'rule off'); }) }))))))));
+    return [add, mine, builtin];
+  },
   async Settings() {
     const { settings, keys } = await api('settings');
     const camel = (k) => k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
     return [el('div', { className: 'card mut' }, 'Daily limits can only be LOWERED (hard caps 6 / 10 / 16 are enforced in the database). DRY_RUN and AUTONOMOUS_MODE are environment variables and cannot be changed here.'),
-      ...keys.filter((k) => k !== 'bot_status').map((k) => {
+      ...keys.filter((k) => k !== 'bot_status' && k !== 'custom_rules' && k !== 'disabled_builtin_rules').map((k) => {
         const cur = settings[camel(k)];
         const input = el('input', { value: typeof cur === 'string' ? cur : JSON.stringify(cur) });
         return el('div', { className: 'card row' }, el('div', { style: 'width:260px' }, k), el('div', { className: 'grow' }, input),

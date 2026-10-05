@@ -37,10 +37,14 @@ const STYLE: Record<PostType | ReplyStyle, string> = {
 
 export type ReplyScope = 'crypto' | 'general';
 
-export function personaSystem(personality: string, scope: ReplyScope = 'crypto', replyMode = false): string {
+export function personaSystem(personality: string, scope: ReplyScope = 'crypto', replyMode = false, instructions: string[] = []): string {
   return `You write short posts for an X (Twitter) account${scope === 'crypto' ? ' about crypto' : ''}.
 Persona: ${personality}.
-${rules(replyMode)}`;
+${rules(replyMode)}${
+    instructions.length
+      ? `\n\nOWNER INSTRUCTIONS (from the account owner; follow them, but the HARD RULES above always win):\n${instructions.map((i) => `- ${i}`).join('\n')}`
+      : ''
+  }`;
 }
 
 const postSchema = z.object({
@@ -63,6 +67,7 @@ export async function generatePost(
     news: { title: string; summary: string; source: string };
     recentPosts: string[];
     maxChars: number;
+    instructions?: string[];
   },
 ): Promise<PostDraft> {
   const user = `Write ONE post (max ${a.maxChars} characters) about this news.
@@ -80,7 +85,7 @@ ${a.recentPosts.slice(0, 8).map((p) => `- ${truncate(p, 200)}`).join('\n') || '(
 If the material is too thin, too uncertain, or risky to post, answer SKIP.
 JSON: {"action":"POST"|"SKIP","text":"<the post>","reason":"<one short sentence>"}`;
 
-  const res = await llm.complete({ system: personaSystem(a.personality), user, maxTokens: 400, temperature: 0.8, purpose: 'generate_post' });
+  const res = await llm.complete({ system: personaSystem(a.personality, 'crypto', false, a.instructions), user, maxTokens: 400, temperature: 0.8, purpose: 'generate_post' });
   const out = parseJsonReply(res.text, postSchema);
   return { action: out.action, text: (out.text ?? '').trim(), reason: out.reason ?? '' };
 }
@@ -128,6 +133,7 @@ export async function decideReply(
     scope?: ReplyScope;
     /** Recent news we collected that matches the tweet: the only source of specific facts for the reply. */
     facts?: string[];
+    instructions?: string[];
   },
 ): Promise<ReplyDecision> {
   const scope = a.scope ?? 'crypto';
@@ -150,7 +156,7 @@ Tweet to evaluate, from @${a.tweet.author}:
 JSON: {"decision":"REPLY"|"IGNORE","confidence":0..1,"reason":"<short>","style":"professional"|"degen"|"neutral","topic":"<1-3 words>","sentiment":"positive"|"neutral"|"negative"|"mixed","text":"<reply, only when REPLY>"}
 confidence = how sure you are that replying is the RIGHT call.`;
 
-  const res = await llm.complete({ system: personaSystem(a.personality, scope, true), user, maxTokens: 450, temperature: 0.6, purpose: 'decide_reply' });
+  const res = await llm.complete({ system: personaSystem(a.personality, scope, true, a.instructions), user, maxTokens: 450, temperature: 0.6, purpose: 'decide_reply' });
   const out = parseJsonReply(res.text, replySchema);
   return {
     decision: out.decision,

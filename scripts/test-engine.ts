@@ -812,6 +812,50 @@ async function main(): Promise<void> {
   const ev = (await (await get('events&limit=5')).json()) as { events: unknown[] };
   check('events API', ev.events.length > 0 && ev.events.length <= 5);
   check('unknown route -> 404', (await get('nope')).status === 404);
+
+  // ---- Rules tab ----
+  type RulesApi = { builtin: Array<{ id: string; locked: boolean; disabled: boolean }>; custom: Array<{ id: string; kind: string; text: string }> };
+  const rulesNow = async () => (await (await get('rules')).json()) as RulesApi;
+  const r0 = await rulesNow();
+  check('rules API lists the built-in rules: many locked, the 4 approval-only ones switchable', r0.builtin.length > 20 && r0.builtin.filter((b) => !b.locked).length === 4 && r0.custom.length === 0);
+  check('add a block rule', (await post('rule_add', { kind: 'block_output', target: 'both', text: 'to the stars' })).status === 200 && (await rulesNow()).custom.length === 1);
+  check('the same rule twice is refused', (await post('rule_add', { kind: 'block_output', target: 'both', text: 'To The Stars' })).status === 400);
+  check('empty phrase refused', (await post('rule_add', { kind: 'skip_input', target: 'reply', text: ' ' })).status === 400);
+  check('unknown kind refused', (await post('rule_add', { kind: 'allow_everything', target: 'reply', text: 'abc' })).status === 400);
+  check('a 150-character phrase is refused, a 150-character instruction is fine',
+    (await post('rule_add', { kind: 'block_output', target: 'post', text: 'x'.repeat(150) })).status === 400 &&
+    (await post('rule_add', { kind: 'instruction', target: 'reply', text: 'Keep it friendly. '.repeat(8) })).status === 200);
+  check('rules need the CSRF header like every write', (await post('rule_add', { kind: 'block_output', target: 'both', text: 'zzz' }, {})).status === 403);
+  check('a locked built-in rule cannot be switched off', (await post('builtin_toggle', { id: 'gate.facts', disabled: true })).status === 400);
+  check('a switchable one can, and back on', (await post('builtin_toggle', { id: 'risk.politics', disabled: true })).status === 200 &&
+    (await rulesNow()).builtin.find((b) => b.id === 'risk.politics')?.disabled === true &&
+    (await post('builtin_toggle', { id: 'risk.politics', disabled: false })).status === 200 &&
+    (await rulesNow()).builtin.find((b) => b.id === 'risk.politics')?.disabled === false);
+  const mineIds = (await rulesNow()).custom.map((c) => c.id);
+  check('remove works, unknown id is 404', (await post('rule_remove', { id: mineIds[0] })).status === 200 && (await post('rule_remove', { id: 'deadbeef' })).status === 404 && (await rulesNow()).custom.length === 1);
+  await writeSetting('custom_rules', []);
+
+  // ---- rules change what the engine does ----
+  const ruleWord = async () => ((await one<string>('select title v from news_items order by id limit 1')) ?? '').split(/\W+/).find((w) => w.length >= 5) ?? '';
+  await reset(); etf(); await collect(); clearGap();
+  const word = await ruleWord();
+  await post('rule_add', { kind: 'skip_input', target: 'post', text: word });
+  const skipped = await runPost(dep);
+  check('skip rule: the story is never sent to Grok', skipped.outcome === 'idle' && !llm.calls['generate_post'], JSON.stringify([skipped, llm.calls]));
+  await post('rule_remove', { id: (await rulesNow()).custom[0]!.id });
+  clearGap();
+  check('removing the rule revives the story', (await runPost(dep)).outcome === 'posted' && llm.calls['generate_post'] === 1);
+  await reset(); etf(); await collect(); clearGap();
+  await post('rule_add', { kind: 'block_output', target: 'post', text: word });
+  const blockedRun = await runPost(dep);
+  check('block rule: the draft is rejected by the gate', blockedRun.outcome === 'idle' && (await postCount('REJECTED')) === 1 && /your rule blocks/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED'`)) ?? ''), JSON.stringify(blockedRun));
+  await writeSetting('custom_rules', []);
+  await reset(); etf(); await collect(); clearGap();
+  const autoDeps = mkDeps({ flags: { dryRun: false, autonomous: true } });
+  await post('rule_add', { kind: 'require_approval', target: 'post', text: word });
+  const needs = await runPost(autoDeps);
+  check('approval rule: autonomous mode still holds the post for you', needs.outcome === 'posted' && needs.result.status === 'PENDING_APPROVAL', JSON.stringify(needs));
+  await writeSetting('custom_rules', []);
   dash.close();
 
   // ===========================================================================================
