@@ -3,7 +3,7 @@ import type { LlmClient } from '../llm/client';
 import { judgeContent } from '../llm/content';
 import { logger } from '../lib/logger';
 import {
-  checkAdvice, checkDuplicate, checkFacts, checkLength, checkSpam, maxRisk, riskFloorFor,
+  checkAdvice, checkDuplicate, checkFacts, checkLength, checkNoCode, checkSpam, maxRisk, riskFloorFor,
   type RiskLevel,
 } from './rules';
 import { findCustomMatch } from './custom';
@@ -50,6 +50,8 @@ export interface GateInput {
   customRules?: CustomRule[];
   /** Switchable built-in rules the owner turned off. */
   disabledBuiltinRules?: string[];
+  /** An original post with no source material: the judge accepts only opinions, jokes and evergreen explanations. */
+  original?: boolean;
 }
 
 /**
@@ -80,6 +82,9 @@ export async function runSafetyGate(llm: LlmClient, input: GateInput): Promise<S
   r = record('spam', checkSpam(input.text, input.kind));
   if (!r.ok) return stop('spam', r.detail);
 
+  r = record('no_code', checkNoCode(input.text));
+  if (!r.ok) return stop('spam', r.detail);
+
   r = record('advice', checkAdvice(input.text));
   if (!r.ok) return stop('risk', r.detail, { riskLevel: 'HIGH' });
 
@@ -99,7 +104,7 @@ export async function runSafetyGate(llm: LlmClient, input: GateInput): Promise<S
   // LLM audit: grounded in the material? any risk the regexes cannot see?
   let judged;
   try {
-    judged = await judgeContent(llm, { kind: input.kind, text: input.text, material: input.material });
+    judged = await judgeContent(llm, { kind: input.kind, text: input.text, material: input.material, original: input.original });
   } catch (err) {
     log.warn('judge failed, failing closed', { err });
     record('judge', { ok: false, detail: 'judge unavailable' });

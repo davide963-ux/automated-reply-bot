@@ -9,6 +9,7 @@ import { isWithinActiveHours } from '../lib/time';
 import { loadRecentTexts, runSafetyGate } from '../safety/gate';
 import { logEvent } from '../services/events';
 import { peekPublishSlot } from '../services/rateLimit';
+import { ensureDisclaimer, sensitiveDomain } from '../llm/disclaimer';
 import { findCustomMatch, instructionsFor } from '../safety/custom';
 import type { CustomRule } from '../config/settings';
 import type { Deps } from './deps';
@@ -68,6 +69,7 @@ export function prefilterTweet(t: Pick<SeenRow, 'text' | 'created_at_x' | 'sourc
   const solicited = t.source === 'mention' || t.source === 'reply_to_us';
   const maxAgeH = solicited ? 24 : 3;
   if (t.created_at_x && now.getTime() - t.created_at_x.getTime() > maxAgeH * 3_600_000) return `older than ${maxAgeH}h`;
+  if (/\b(suicide|suicidal|kill myself|self[- ]harm|end my life|overdose)\b/i.test(t.text)) return 'sensitive: self-harm';
   if (/\b(giveaway|airdrop|dm me|follow back|f4f|100x|gem alert|presale)\b/i.test(t.text)) return 'spam/shill keywords';
   if ((t.text.match(/#\w+/g) ?? []).length > 3) return 'hashtag spam';
   const mine = findCustomMatch(rules, 'skip_input', 'reply', t.text);
@@ -222,7 +224,19 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
       continue;
     }
 
-    const text = d.text.replace(/^(@\w+\s+)+/, '').trim(); // X adds the @mention itself for replies
+    let text = d.text.replace(/^(@\w+\s+)+/, '').trim(); // X adds the @mention itself for replies
+
+    // Politics / health: the IMO opener and the "double-check, I'm not a ..." line are ENFORCED here, whatever the model did.
+    const sensitive = d.domain === 'health' || d.domain === 'politics' ? d.domain : sensitiveDomain(t.text, text);
+    if (sensitive && s.replyScope === 'general') {
+      const withDisclaimer = ensureDisclaimer(text, sensitive);
+      if (!withDisclaimer) {
+        await markSeen(t.x_post_id, 'IGNORED', `${sensitive}: the disclaimer would not fit in a tweet`);
+        await logEvent({ action: 'REPLY_GENERATED', inputRef: t.x_post_id, decision: 'IGNORE', reason: `${sensitive} topic: answer plus disclaimer too long`, result: 'no reply' });
+        continue;
+      }
+      text = withDisclaimer;
+    }
     const material = [...history.map((h) => h.text), t.text, ...facts].join('\n');
     const report = await runSafetyGate(deps.llm, { kind: 'reply', text, material, recentTexts, riskContext: [t.text], customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules });
 
@@ -259,7 +273,7 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
     await markSeen(t.x_post_id, 'REPLIED', d.reason);
     await logEvent({
       action: 'REPLY_GENERATED', inputRef: replyId, decision: 'REPLY', reason: d.reason, confidence: d.confidence,
-      result: 'passed safety gate', details: { source: t.source, style: d.style },
+      result: 'passed safety gate', details: { source: t.source, style: d.style, domain: d.domain ?? null },
     });
     const result = await routeAfterSafety(deps, 'reply', replyId, report);
     return { outcome: 'replied', result, replyId };
