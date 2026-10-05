@@ -124,6 +124,21 @@ export function checkNoCode(text: string): CheckResult {
   return pass();
 }
 
+// ---------------------------------------------------------------------------
+// No invented human life: he is an AI-run account, so no boss, age, family, meals, sleep or personal anecdotes
+// ---------------------------------------------------------------------------
+const HUMAN_LIFE_PATTERNS: Array<[RegExp, string]> = [
+  [/\b(my|our)\s+(boss|manager|coworkers?|colleagues?|wife|husband|girlfriend|boyfriend|partner|mom|mum|mother|dad|father|parents?|kids?|children|son|daughter|family|landlord|roommate|therapist|doctor|job|office|commute|apartment|house|bed|car)\b/i, 'invented human life (my boss / family / home)'],
+  [/\bsince (age|i was)\s+\d+\b|\bwhen i was (a kid|\d+|young|little)\b|\bgrowing up\b/i, 'invented human past'],
+  [/\bi(?:'m| am)\s+(\d+\s*(years? old|yo)\b|a\s+(dad|mom|father|mother|husband|wife|student|nurse|teacher|developer|engineer|human))/i, 'claims to be a human'],
+  [/\bi\s+(woke up|slept|overslept|ate|had\s+(a\s+)?(coffee|breakfast|lunch|dinner|beer)|drank|went to (bed|work|school|the gym)|got (home|married|fired|dumped)|can't sleep|couldn't sleep|stayed up)\b/i, 'invented human routine'],
+];
+
+export function checkHumanLife(text: string): CheckResult {
+  for (const [re, why] of HUMAN_LIFE_PATTERNS) if (re.test(text)) return fail(`invented human life: ${why}`);
+  return pass();
+}
+
 export function checkAdvice(text: string): CheckResult {
   for (const [re, why] of ADVICE_PATTERNS) if (re.test(text)) return fail(`risk: ${why}`);
   return pass();
@@ -185,6 +200,7 @@ export function builtinCatalog(): BuiltinRule[] {
     { id: 'gate.facts', group: 'Facts', effect: 'REJECT', what: 'Every number and ticker in a draft must appear in its source (news or tweet + facts). Years and 1-2 digit numbers are exempt', locked: true },
     { id: 'gate.duplicate', group: 'Duplicates', effect: 'REJECT', what: 'Too similar to anything posted in the last 7 days (similarity 0.6 posts, 0.7 replies)', locked: true },
     { id: 'gate.style', group: 'Spam', effect: 'REJECT', what: 'More than 1 hashtag, more than 1 @mention (0 in posts), more than 1 link in a post (0 in replies), more than 3 emoji, or ALL CAPS shouting', locked: true },
+    { id: 'gate.human', group: 'Identity', effect: 'REJECT', what: 'He is an AI-run account: drafts that invent a human life (my boss, my family, since age 12, I woke up, I am a dad...) are rejected, and the prompt tells him to joke as an AI or as an observer of humans and the internet', locked: true },
     { id: 'gate.nocode', group: 'Format', effect: 'REJECT', what: 'No code in posts or replies: backticks, code blocks, shell commands, HTML tags and obvious code are rejected (he explains in words)', locked: true },
     { id: 'gate.judge', group: 'AI reviewer', effect: 'REJECT / force approval', what: 'A second Grok pass audits each draft: unsupported claims reject it, HIGH risk rejects it, MEDIUM risk forces approval. If it is unavailable the draft is held back (fails closed)', locked: true },
     { id: 'prefilter.tweets', group: 'Tweet prefilter', effect: 'SKIP (free)', what: 'Tweets with under 8 real characters, older than 3 h (24 h if they addressed us), more than 3 hashtags, self-harm wording, or shill words (giveaway, airdrop, dm me, follow back, f4f, 100x, gem alert, presale)', locked: true },

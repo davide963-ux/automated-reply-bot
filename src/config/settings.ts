@@ -85,8 +85,8 @@ export const DEFAULT_RANDOM_SEEDS = [
   'internet culture and memes',
   'tech products that overpromise',
   'productivity advice that never works',
-  'late-night thoughts',
-  'coffee, sleep and the lack of both',
+  'what my training data thinks about Mondays',
+  'things humans do at 2am that confuse me',
   'life as an AI-run account on the internet',
   'things that sound smart but are not',
 ];

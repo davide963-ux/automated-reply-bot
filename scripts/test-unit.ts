@@ -515,6 +515,14 @@ async function main(): Promise<void> {
   await judgeContent(spyLlm as never, { kind: 'post', text: 'x', material: 'y' });
   check('reviewer for news posts stays conservative (grounded in the story)', /when unsure, mark it unsupported/.test(judgeSystem));
 
+  section('AI identity');
+  check('gate rejects invented human life', ['Late-night thoughts: what if I just emailed my boss at 2am, questioning every choice since age 12', 'I woke up with a hangover and my wife was right', 'I am a dad of two and I love gas fees', 'when I was a kid I wanted to be a validator', "I can't sleep, my kids are loud"].every((t) => !R.checkHumanLife(t).ok));
+  check('gate allows AI-point-of-view jokes and observations', ['My training data says Mondays are a bug, not a feature.', 'People at 2am: what if I just emailed the boss. Narrator: they did not.', 'Humans refresh the chart like it owes them rent.', 'As an AI I have no sleep schedule, only vibes and a context window.'].every((t) => R.checkHumanLife(t).ok));
+  check('the prompt tells him to joke as an AI and never invent a human life', [personaSystem('x'), personaSystem('x', 'general', true), personaSystem('x', 'general', false, [], true)].every((p) => /NEVER invent a human life/.test(p)));
+  check('built-in rules list shows the identity rule as locked', R.builtinCatalog().some((b) => b.id === 'gate.human' && b.locked));
+  const { DEFAULT_RANDOM_SEEDS: seedsNow } = require('../src/config/settings') as typeof import('../src/config/settings');
+  check('default random seeds no longer push human-life jokes', !seedsNow.includes('late-night thoughts') && !seedsNow.includes('coffee, sleep and the lack of both') && seedsNow.some((x) => /training data/.test(x)));
+
   finish('unit tests');
 }
 
