@@ -438,6 +438,35 @@ async function main(): Promise<void> {
   check('persona keeps the hard rules in both scopes', /No financial advice/.test(personaSystem('x', 'general')) && /No politics/.test(personaSystem('x', 'general')));
   check('reply_scope setting only accepts crypto|general', SETTING_SCHEMAS.reply_scope.safeParse('general').success && !SETTING_SCHEMAS.reply_scope.safeParse('anything').success);
 
+  section('reply facts');
+  const { pickRelevantNews } = require('../src/engine/replyEngine') as typeof import('../src/engine/replyEngine');
+  const newsItems = [
+    { title: 'Spot Ether ETFs record $1.2 billion inflows', summary: 'Friday saw the largest daily inflows since launch.', source: 'CoinDesk' },
+    { title: 'Local bakery wins award', summary: 'Sourdough', source: 'Bread Weekly' },
+    { title: 'Bitcoin miners add hashrate', summary: null, source: 'The Block' },
+  ];
+  const picked = pickRelevantNews('why did etf inflows spike the last friday', newsItems);
+  check('a question about ETF inflows picks the matching story, not the bakery', picked.length === 1 && /Spot Ether ETFs/.test(picked[0]!) && /CoinDesk/.test(picked[0]!), JSON.stringify(picked));
+  check('a single shared word is not enough (no weak matches)', pickRelevantNews('bitcoin is great', newsItems).length === 0);
+  check('no usable words -> no facts', pickRelevantNews('why did the', newsItems).length === 0);
+  const sysReply = personaSystem('x', 'general', true);
+  check('reply mode: concepts may use general knowledge, specifics need the FACTS', /FACTS provided/.test(sysReply) && /general knowledge/.test(sysReply));
+  check('post mode keeps the strict only-the-material rule', /ONLY facts present in the provided material/.test(personaSystem('x', 'crypto')) && !/general knowledge/.test(personaSystem('x', 'crypto')));
+  check('reply mode still bans advice, politics and invented numbers', /No financial advice/.test(sysReply) && /No politics/.test(sysReply) && /never invent them/.test(sysReply));
+
+  section('custom rules');
+  const CU = require('../src/safety/custom') as typeof import('../src/safety/custom');
+  const rule = (kind: 'block_output' | 'skip_input' | 'require_approval' | 'instruction', text: string, target: 'post' | 'reply' | 'both' = 'both') => ({ id: 'abcdef12', kind, target, text });
+  check('phrases match case-insensitively on word boundaries', CU.phraseRegex('moon').test('To the MOON') && !CU.phraseRegex('moon').test('honeymooner'));
+  check('regex characters in a phrase are literal (cannot hang or break)', CU.phraseRegex('a+b(').test('see a+b( here') && !CU.phraseRegex('.*').test('anything'));
+  check('target filter: a reply-only rule does not touch posts', CU.findCustomMatch([rule('block_output', 'moon', 'reply')], 'block_output', 'post', 'moon') === undefined && CU.findCustomMatch([rule('block_output', 'moon', 'reply')], 'block_output', 'reply', 'moon') !== undefined);
+  check('kind filter: a skip rule never blocks output', CU.findCustomMatch([rule('skip_input', 'moon')], 'block_output', 'post', 'moon') === undefined);
+  check('instructions are collected per target', CU.instructionsFor([rule('instruction', 'Be brief', 'reply'), rule('instruction', 'No jokes', 'post')], 'reply').join() === 'Be brief');
+  check('persona prompt carries owner instructions and still says the hard rules win', /OWNER INSTRUCTIONS/.test(personaSystem('x', 'crypto', false, ['Be brief'])) && /HARD RULES above always win/.test(personaSystem('x', 'crypto', false, ['Be brief'])) && !/OWNER INSTRUCTIONS/.test(personaSystem('x')));
+  check('a disabled switchable rule stops forcing approval; HIGH rules cannot be disabled', R.riskFloorFor(['risk.politics'], 'new election results').level === 'LOW' && R.riskFloorFor(R.SWITCHABLE_RULE_IDS, 'founder dies').level === 'HIGH');
+  check('exactly the 4 approval-only built-ins are switchable', R.SWITCHABLE_RULE_IDS.length === 4 && R.builtinCatalog().filter((b) => !b.locked).length === 4);
+  check('tweet prefilter honours a skip rule', prefilterTweet({ text: 'soon wen moon for everyone', created_at_x: new Date(), source: 'tracked_account' }, new Date(), [rule('skip_input', 'wen moon', 'reply')])?.includes('your rule') === true);
+
   finish('unit tests');
 }
 

@@ -9,6 +9,8 @@ import { isWithinActiveHours } from '../lib/time';
 import { loadRecentTexts, runSafetyGate } from '../safety/gate';
 import { logEvent } from '../services/events';
 import { peekPublishSlot } from '../services/rateLimit';
+import { findCustomMatch, instructionsFor } from '../safety/custom';
+import type { CustomRule } from '../config/settings';
 import type { Deps } from './deps';
 import { routeAfterSafety, type PublishResult } from './publisher';
 import { committedToday } from './postEngine';
@@ -39,8 +41,28 @@ const INTERACTION: Record<SeenRow['source'], string> = {
   keyword_search: 'keyword_search',
 };
 
+const STOPWORDS = new Set(
+  'the and for are was were why how what when where who did does this that with from have has had will would about last next been you your can could not but all any our out its into than then they them there their just like get got one two new now today yesterday please tell why'.split(' '),
+);
+const wordsOf = (t: string): string[] => [...new Set(t.toLowerCase().replace(/https?:\/\/\S+/g, ' ').match(/[a-z0-9]{3,}/g) ?? [])].filter((w) => !STOPWORDS.has(w));
+
+/** Recent collected news that matches the tweet (2+ distinct shared words): the only source of specific facts. */
+export function pickRelevantNews(tweetText: string, items: Array<{ title: string; summary: string | null; source: string | null }>, max = 3): string[] {
+  const words = wordsOf(tweetText);
+  if (words.length === 0) return [];
+  return items
+    .map((i) => {
+      const hay = new Set(wordsOf(`${i.title} ${i.summary ?? ''}`));
+      return { i, score: words.filter((w) => hay.has(w)).length };
+    })
+    .filter((x) => x.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map(({ i }) => `${i.title}${i.summary ? ` - ${i.summary}` : ''} (${i.source ?? 'news'})`);
+}
+
 /** Pure pre-filter: does this tweet deserve an LLM call at all? Returns a skip reason, or null. */
-export function prefilterTweet(t: Pick<SeenRow, 'text' | 'created_at_x' | 'source'>, now: Date): string | null {
+export function prefilterTweet(t: Pick<SeenRow, 'text' | 'created_at_x' | 'source'>, now: Date, rules: CustomRule[] = []): string | null {
   const bare = t.text.replace(/https?:\/\/\S+/g, '').replace(/(^|\s)@\w+/g, '').replace(/\s+/g, ' ').trim();
   if (bare.length < 8) return 'too short / no real content';
   const solicited = t.source === 'mention' || t.source === 'reply_to_us';
@@ -48,6 +70,8 @@ export function prefilterTweet(t: Pick<SeenRow, 'text' | 'created_at_x' | 'sourc
   if (t.created_at_x && now.getTime() - t.created_at_x.getTime() > maxAgeH * 3_600_000) return `older than ${maxAgeH}h`;
   if (/\b(giveaway|airdrop|dm me|follow back|f4f|100x|gem alert|presale)\b/i.test(t.text)) return 'spam/shill keywords';
   if ((t.text.match(/#\w+/g) ?? []).length > 3) return 'hashtag spam';
+  const mine = findCustomMatch(rules, 'skip_input', 'reply', t.text);
+  if (mine) return `your rule: skip tweets containing "${mine.text}"`;
   return null;
 }
 
@@ -96,7 +120,7 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
   for (const t of queue) {
     const solicited = t.source === 'mention' || t.source === 'reply_to_us';
 
-    const pre = prefilterTweet(t, now);
+    const pre = prefilterTweet(t, now, s.customRules);
     if (pre) { await markSeen(t.x_post_id, 'SKIPPED', pre); continue; }
 
     // ---- guards that need the database ----
@@ -158,6 +182,16 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
       ...ours.reverse().map((x) => ({ who: 'us' as const, text: x.content })),
     ];
 
+    // ---- facts: recent collected news that matches the tweet ----
+    const recentNews = (
+      await query<{ title: string; summary: string | null; source: string | null }>(
+        `select n.title, n.summary, s.name as source from news_items n left join sources s on s.id = n.source_id
+          where coalesce(n.published_at, n.fetched_at) > now() - interval '48 hours'
+          order by coalesce(n.published_at, n.fetched_at) desc limit 150`,
+      )
+    ).rows;
+    const facts = pickRelevantNews(t.text, recentNews);
+
     // ---- decision + draft (one LLM call) ----
     let d;
     try {
@@ -168,6 +202,8 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
         history,
         maxChars: MAX_REPLY_CHARS,
         scope: s.replyScope,
+        facts,
+        instructions: instructionsFor(s.customRules, 'reply'),
       });
     } catch (err) {
       log.warn('reply decision failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
@@ -187,8 +223,8 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
     }
 
     const text = d.text.replace(/^(@\w+\s+)+/, '').trim(); // X adds the @mention itself for replies
-    const material = [...history.map((h) => h.text), t.text].join('\n');
-    const report = await runSafetyGate(deps.llm, { kind: 'reply', text, material, recentTexts, riskContext: [t.text] });
+    const material = [...history.map((h) => h.text), t.text, ...facts].join('\n');
+    const report = await runSafetyGate(deps.llm, { kind: 'reply', text, material, recentTexts, riskContext: [t.text], customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules });
 
     if (!report.ok && report.retryable) {
       await logEvent({ action: 'ERROR', inputRef: t.x_post_id, decision: 'GATE_RETRYABLE', reason: report.reason, result: 'retry later' });

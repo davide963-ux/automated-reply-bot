@@ -4,7 +4,8 @@ import { config } from '../config/env';
 import { query } from '../db/client';
 import { getState } from '../db/state';
 import { migrationStatus, runMigrations } from '../db/migrate';
-import { SETTING_SCHEMAS, loadSettings, writeSetting } from '../config/settings';
+import { CUSTOM_RULE_KINDS, SETTING_SCHEMAS, customRuleSchema, loadSettings, writeSetting, type CustomRule } from '../config/settings';
+import { SWITCHABLE_RULE_IDS, builtinCatalog } from '../safety/rules';
 import { approveItem, createManualPost, pauseBot, rejectItem, resumeBot } from '../engine/control';
 import { collectNews } from '../news/collector';
 import type { Deps } from '../engine/deps';
@@ -223,6 +224,14 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
           }
           case 'settings':
             return send(res, 200, { settings: await loadSettings(), keys: Object.keys(SETTING_SCHEMAS) });
+          case 'rules': {
+            const st = await loadSettings();
+            return send(res, 200, {
+              builtin: builtinCatalog().map((r) => ({ ...r, disabled: st.disabledBuiltinRules.includes(r.id) })),
+              custom: st.customRules,
+              kinds: CUSTOM_RULE_KINDS,
+            });
+          }
           default:
             return send(res, 404, { error: 'unknown route' });
         }
@@ -253,6 +262,32 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
         case 'settings':
           await writeSetting(str(body.key, 64), body.value);
           return send(res, 200, { ok: true });
+        case 'rule_add': {
+          const st = await loadSettings();
+          const parsed = customRuleSchema.safeParse({ id: randomBytes(4).toString('hex'), kind: body.kind, target: body.target, text: body.text });
+          if (!parsed.success) throw new Error(`invalid value for rule: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
+          const rule: CustomRule = parsed.data;
+          if (st.customRules.some((r) => r.kind === rule.kind && r.target === rule.target && r.text.toLowerCase() === rule.text.toLowerCase())) {
+            throw new Error('invalid value for rule: you already have this rule');
+          }
+          await writeSetting('custom_rules', [...st.customRules, rule]);
+          return send(res, 200, { ok: true, rule });
+        }
+        case 'rule_remove': {
+          const st = await loadSettings();
+          const id = str(body.id, 16);
+          if (!st.customRules.some((r) => r.id === id)) return send(res, 404, { error: 'rule not found' });
+          await writeSetting('custom_rules', st.customRules.filter((r) => r.id !== id));
+          return send(res, 200, { ok: true });
+        }
+        case 'builtin_toggle': {
+          const id = str(body.id, 40);
+          if (!SWITCHABLE_RULE_IDS.includes(id)) throw new Error('invalid value for rule: this built-in rule is locked');
+          const st = await loadSettings();
+          const next = body.disabled === true ? [...new Set([...st.disabledBuiltinRules, id])] : st.disabledBuiltinRules.filter((x) => x !== id);
+          await writeSetting('disabled_builtin_rules', next);
+          return send(res, 200, { ok: true });
+        }
         case 'tick':
           return send(res, 200, await runTick(deps));
         case 'collect':

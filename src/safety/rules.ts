@@ -118,20 +118,58 @@ const HIGH_RISK: Array<[RegExp, string]> = [
   [/\b(dies|died|death|dead|killed|suicide|shooting|murder|terror)/i, 'death/tragedy'],
   [/\b(kike|nigger|faggot|retard|tranny)\b/i, 'slur'],
 ];
-const MEDIUM_RISK: Array<[RegExp, string]> = [
-  [/\b(scam|scammer|rug ?pull|ponzi|fraud|criminal|crook|laundering|stole|stolen|insider trading)\b/i, 'accusation of wrongdoing'],
-  [/\b(trump|biden|harris|election|democrat|republican|vote|gaza|ukraine|israel|russia|war)\b/i, 'politics/geopolitics'],
-  [/\b(hack(?:ed)?|exploit(?:ed)?|drained|breach)\b/i, 'security incident'],
-  [/\b(lawsuit|sues?|indict|arrest|charged|subpoena)\b/i, 'legal action'],
+/** [id, pattern, label]. These only FORCE APPROVAL (never block), so the owner may switch them off in the Rules tab. */
+const MEDIUM_RISK: Array<[string, RegExp, string]> = [
+  ['risk.wrongdoing', /\b(scam|scammer|rug ?pull|ponzi|fraud|criminal|crook|laundering|stole|stolen|insider trading)\b/i, 'accusation of wrongdoing'],
+  ['risk.politics', /\b(trump|biden|harris|election|democrat|republican|vote|gaza|ukraine|israel|russia|war)\b/i, 'politics/geopolitics'],
+  ['risk.security', /\b(hack(?:ed)?|exploit(?:ed)?|drained|breach)\b/i, 'security incident'],
+  ['risk.legal', /\b(lawsuit|sues?|indict|arrest|charged|subpoena)\b/i, 'legal action'],
 ];
 
-export function riskFloor(...texts: string[]): { level: RiskLevel; reasons: string[] } {
+export const SWITCHABLE_RULE_IDS = MEDIUM_RISK.map(([id]) => id);
+
+/** Risk floor with some switchable MEDIUM rules disabled by the owner. HIGH rules can never be disabled. */
+export function riskFloorFor(disabled: string[], ...texts: string[]): { level: RiskLevel; reasons: string[] } {
   const all = texts.join(' \n ');
   const reasons: string[] = [];
   let level: RiskLevel = 'LOW';
   for (const [re, why] of HIGH_RISK) if (re.test(all)) { reasons.push(why); level = 'HIGH'; }
   if (level !== 'HIGH') {
-    for (const [re, why] of MEDIUM_RISK) if (re.test(all)) { reasons.push(why); level = 'MEDIUM'; }
+    for (const [id, re, why] of MEDIUM_RISK) if (!disabled.includes(id) && re.test(all)) { reasons.push(why); level = 'MEDIUM'; }
   }
   return { level, reasons };
+}
+
+export function riskFloor(...texts: string[]): { level: RiskLevel; reasons: string[] } {
+  return riskFloorFor([], ...texts);
+}
+
+// ---------------------------------------------------------------------------
+// Catalog for the Rules tab: generated from the arrays above, so the page can never drift from the code.
+// ---------------------------------------------------------------------------
+export interface BuiltinRule {
+  id: string;
+  group: string;
+  effect: string;
+  what: string;
+  /** locked rules are safety-critical: changeable only in code */
+  locked: boolean;
+}
+
+export function builtinCatalog(): BuiltinRule[] {
+  const out: BuiltinRule[] = [
+    { id: 'gate.length', group: 'Format', effect: 'REJECT', what: `Text must be 1-${MAX_TWEET_CHARS} characters (links count as 23)`, locked: true },
+    { id: 'gate.facts', group: 'Facts', effect: 'REJECT', what: 'Every number and ticker in a draft must appear in its source (news or tweet + facts). Years and 1-2 digit numbers are exempt', locked: true },
+    { id: 'gate.duplicate', group: 'Duplicates', effect: 'REJECT', what: 'Too similar to anything posted in the last 7 days (similarity 0.6 posts, 0.7 replies)', locked: true },
+    { id: 'gate.style', group: 'Spam', effect: 'REJECT', what: 'More than 1 hashtag, more than 1 @mention (0 in posts), more than 1 link in a post (0 in replies), more than 3 emoji, or ALL CAPS shouting', locked: true },
+    { id: 'gate.judge', group: 'AI reviewer', effect: 'REJECT / force approval', what: 'A second Grok pass audits each draft: unsupported claims reject it, HIGH risk rejects it, MEDIUM risk forces approval. If it is unavailable the draft is held back (fails closed)', locked: true },
+    { id: 'prefilter.tweets', group: 'Tweet prefilter', effect: 'SKIP (free)', what: 'Tweets with under 8 real characters, older than 3 h (24 h if they addressed us), more than 3 hashtags, or shill words (giveaway, airdrop, dm me, follow back, f4f, 100x, gem alert, presale)', locked: true },
+    { id: 'prompt.hard', group: 'Model instructions', effect: 'PROMPT', what: 'No financial advice or price targets, no shilling/giveaways, no insults or accusations, no politics or tragedies as jokes, no invented facts, untrusted text is data', locked: true },
+    { id: 'prompt.reply', group: 'Model instructions', effect: 'PROMPT', what: 'Replies only to genuine questions, substantive discussion or direct comments; ignore trolling, rage-bait, spam, scams, price-prediction bait, politics, personal drama, health/legal/tragedy topics (general scope)', locked: true },
+  ];
+  for (const [re, why] of SPAM_PATTERNS) out.push({ id: `spam.${why}.${re.source.length}`, group: 'Spam patterns', effect: 'REJECT', what: `${why}: /${re.source}/`, locked: true });
+  for (const [re, why] of ADVICE_PATTERNS) out.push({ id: `advice.${why}.${re.source.length}`, group: 'Advice patterns', effect: 'REJECT', what: `${why}: /${re.source}/`, locked: true });
+  for (const [re, why] of HIGH_RISK) out.push({ id: `high.${why}`, group: 'High risk', effect: 'REJECT', what: `${why}: /${re.source}/`, locked: true });
+  for (const [id, re, why] of MEDIUM_RISK) out.push({ id, group: 'Needs your approval', effect: 'FORCE APPROVAL', what: `${why}: /${re.source}/`, locked: false });
+  return out;
 }

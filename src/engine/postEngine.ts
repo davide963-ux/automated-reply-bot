@@ -10,6 +10,7 @@ import { config } from '../config/env';
 import { loadRecentTexts, runSafetyGate } from '../safety/gate';
 import { logEvent } from '../services/events';
 import { peekPublishSlot } from '../services/rateLimit';
+import { findCustomMatch, instructionsFor } from '../safety/custom';
 import type { Deps } from './deps';
 import { routeAfterSafety, type PublishResult } from './publisher';
 
@@ -120,6 +121,8 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
   for (const n of candidates) {
     if (attempts >= MAX_ATTEMPTS_PER_TICK) break;
     if (deadlineMs !== undefined && Date.now() > deadlineMs) return idle('time budget reached, continuing next tick');
+    // Owner rule: never write about stories containing this phrase (free, nothing is stored: removing the rule revives them).
+    if (findCustomMatch(s.customRules, 'skip_input', 'post', n.title, n.summary ?? '')) continue;
     const confidence = Number(n.confidence);
     const importance = Number(n.importance_score);
     const type = pickPostType({
@@ -145,6 +148,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
         news: { title: n.title, summary: n.summary ?? '', source: n.source_name ?? 'unknown' },
         recentPosts: recentPosts.map((p) => p.content),
         maxChars,
+        instructions: instructionsFor(s.customRules, 'post'),
       });
     } catch (err) {
       log.warn('generation failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
@@ -160,7 +164,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
 
     const bare = cleanText(draft.text);
     const material = `${n.title}\n${n.summary ?? ''}\nSource: ${n.source_name ?? ''}`;
-    const gateReport = await runSafetyGate(deps.llm, { kind: 'post', text: bare, material, recentTexts });
+    const gateReport = await runSafetyGate(deps.llm, { kind: 'post', text: bare, material, recentTexts, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules });
 
     // Link is appended AFTER the gate (digits inside URLs must not trip the fact check).
     let content = bare;
