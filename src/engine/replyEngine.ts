@@ -224,7 +224,8 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
       continue;
     }
 
-    let text = d.text.replace(/^(@\w+\s+)+/, '').trim(); // X adds the @mention itself for replies
+    let text = d.text.replace(/^(@\w+(\s+|$))+/, '').trim(); // X adds the @mention itself for replies
+    if (!text) { await markSeen(t.x_post_id, 'IGNORED', 'empty reply'); continue; }
 
     // Politics / health: the IMO opener and the "double-check, I'm not a ..." line are ENFORCED here, whatever the model did.
     const sensitive = d.domain === 'health' || d.domain === 'politics' ? d.domain : sensitiveDomain(t.text, text);
@@ -251,7 +252,7 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
        values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        on conflict (idempotency_key) do nothing returning id`,
       [
-        deps.accountId, t.x_post_id, t.text, convId, t.author_id, text, contentHash(text), d.reason, d.confidence, d.style,
+        deps.accountId, t.x_post_id, t.text, convId, t.author_id, text.slice(0, 280), contentHash(text), d.reason, d.confidence, d.style,
         !solicited, sha256(`${deps.accountId}|reply|${t.x_post_id}`),
         report.ok ? 'DRAFT' : 'REJECTED',
         report.ok ? null : `${report.stage}: ${report.reason}`.slice(0, 500),

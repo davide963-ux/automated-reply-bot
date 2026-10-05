@@ -201,6 +201,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
       }
 
       const bare = cleanText(draft.text);
+      if (!bare) continue;
       const material = `${n.title}\n${n.summary ?? ''}\nSource: ${n.source_name ?? ''}`;
       const gateReport = await runSafetyGate(deps.llm, { kind: 'post', text: bare, material, recentTexts, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules });
 
@@ -221,7 +222,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
          values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
          on conflict (idempotency_key) do nothing returning id`,
         [
-          deps.accountId, content, type, n.topic, JSON.stringify([n.url]), n.id, contentHash(content),
+          deps.accountId, content.slice(0, 280), type, n.topic, JSON.stringify([n.url]), n.id, contentHash(content),
           sha256(`${deps.accountId}|post|${n.id}`),
           gateReport.ok ? 'DRAFT' : 'REJECTED',
           gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
@@ -273,6 +274,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
     if (draft.action === 'SKIP' || !draft.text) return null; // nothing good: stay silent rather than post filler
 
     const text = cleanText(draft.text);
+    if (!text) return null;
     // Material is only the topic seed: any number or $ticker the model adds is rejected by the fact check.
     const gateReport = await runSafetyGate(deps.llm, {
       kind: 'post', text, material: seed, recentTexts, original: true, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules,
@@ -287,7 +289,7 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
        values ($1,$2,'flexible',$3,'[]'::jsonb,null,$4,$5,$6,$7)
        on conflict (idempotency_key) do nothing returning id`,
       [
-        deps.accountId, text, `mind:${seed}`, contentHash(text), sha256(`${deps.accountId}|post|mind|${randomUUID()}`),
+        deps.accountId, text.slice(0, 280), `mind:${seed}`, contentHash(text), sha256(`${deps.accountId}|post|mind|${randomUUID()}`),
         gateReport.ok ? 'DRAFT' : 'REJECTED',
         gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
       ],

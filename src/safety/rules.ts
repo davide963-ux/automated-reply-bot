@@ -18,6 +18,8 @@ export const MAX_TWEET_CHARS = 280;
 export function checkLength(text: string, max = MAX_TWEET_CHARS): CheckResult {
   if (!text.trim()) return fail('empty text');
   const len = tweetLength(text);
+  // The database also caps stored text at 280 raw characters (a long URL counts 23 for X but more here).
+  if (text.length > MAX_TWEET_CHARS) return fail(`too long: ${text.length} characters (limit ${MAX_TWEET_CHARS})`);
   return len <= max ? pass(`${len}/${max}`) : fail(`too long: ${len}/${max}`);
 }
 
