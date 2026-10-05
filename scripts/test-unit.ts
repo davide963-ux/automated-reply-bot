@@ -509,6 +509,9 @@ async function main(): Promise<void> {
   const { judgeContent } = require('../src/llm/content') as typeof import('../src/llm/content');
   await judgeContent(spyLlm as never, { kind: 'reply', text: 'x', material: 'y' });
   check('reviewer for replies accepts opinions and general knowledge, rejects only specific checkable claims', /Opinions, analysis, explanations/.test(judgeSystem) && /specific, checkable fact/.test(judgeSystem) && !/when unsure, mark it unsupported/.test(judgeSystem));
+  check('...and picks the LOWER risk level when unsure', /choose the LOWER level/.test(judgeSystem));
+  const { SETTING_SCHEMAS: SS2 } = require('../src/config/settings') as typeof import('../src/config/settings');
+  check('general reply criteria no longer say "anything you are unsure about"', !/anything you are unsure about/.test(replyCriteria('general')) && /anything you are unsure about/.test(replyCriteria('crypto')) && Boolean(SS2.disabled_builtin_rules));
   await judgeContent(spyLlm as never, { kind: 'post', text: 'x', material: 'y' });
   check('reviewer for news posts stays conservative (grounded in the story)', /when unsure, mark it unsupported/.test(judgeSystem));
 

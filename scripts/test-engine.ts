@@ -870,6 +870,7 @@ async function main(): Promise<void> {
   // ===========================================================================================
   section('10c. generalist account: posts from his own mind, replies on any topic, disclaimers, no code');
   const { checkNoCode } = require('../src/safety/rules') as typeof import('../src/safety/rules');
+  await query(`delete from settings where key in ('disabled_builtin_rules','custom_rules')`); // back to the defaults (the Rules-tab test above wrote its own values)
   const mind = async () => (await query<{ content: string; topic: string; news_item_id: string | null; content_type: string; status: string }>(`select content, topic, news_item_id, content_type, status from posts order by created_at desc limit 1`)).rows[0];
   await reset();
   await writeSetting('post_mix', { news: 0, thoughts: 100, random: 0 });
@@ -935,8 +936,16 @@ async function main(): Promise<void> {
   check('health question: IMO opener and the not-a-doctor line are enforced', /^IMO, /.test(health) && /Double-check this, I'm not a doctor\.$/.test(health), health);
   const politics = await body('%election%');
   check('politics question (model said "general"): the backstop still adds IMO and not-a-politician', /^IMO, /.test(politics) && /not a politician\.$/.test(politics), politics);
-  check('health and politics replies are held for approval (MEDIUM risk), the coding one was not',
-    (await one<string>(`select status v from replies where parent_text like '%ibuprofen%'`)) === 'PENDING_APPROVAL' && (await one<string>(`select status v from replies where parent_text like '%election%'`)) === 'PENDING_APPROVAL');
+  check('health and politics replies are published like any other reply (the IMO format replaces the old approval hold)',
+    (await one<string>(`select status v from replies where parent_text like '%ibuprofen%'`)) === 'PUBLISHED' && (await one<string>(`select status v from replies where parent_text like '%election%'`)) === 'PUBLISHED');
+  await writeSetting('disabled_builtin_rules', []);
+  await reset();
+  fx.mentions = [gen('751', '@testbot is it ok to take ibuprofen every day for back pain?')];
+  llm.reply = () => ({ decision: 'REPLY', confidence: 0.9, reason: 'health', style: 'neutral', topic: 'health', domain: 'health', text: 'Regular use can irritate the stomach, so people usually ask a pharmacist.' });
+  await pollX(mkDeps(), await loadSettings());
+  await runReply(rep);
+  check('...and switching the rule back on in the Rules tab holds them for approval again', (await one<string>(`select status v from replies where parent_text like '%ibuprofen%'`)) === 'PENDING_APPROVAL');
+  await query(`delete from settings where key = 'disabled_builtin_rules'`);
   await reset();
   fx.mentions = [gen('711', '@testbot honestly i want to kill myself')];
   await pollX(mkDeps(), await loadSettings());
