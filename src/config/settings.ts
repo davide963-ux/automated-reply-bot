@@ -163,7 +163,9 @@ export async function loadSettings(): Promise<Settings> {
     includeSourceLink: pick('include_source_link', false),
     approvalTtlHours: pick('approval_ttl_hours', 12),
     customRules: pick('custom_rules', []),
-    disabledBuiltinRules: pick('disabled_builtin_rules', []),
+    // Politics and health replies already carry the enforced "IMO ... I'm not a doctor/politician" format, so by default
+    // they are not also held for approval. Turn them back on in the Rules tab.
+    disabledBuiltinRules: pick('disabled_builtin_rules', ['risk.politics', 'risk.health']),
   };
 }
 

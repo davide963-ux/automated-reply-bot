@@ -499,9 +499,21 @@ async function main(): Promise<void> {
   check('no-code gate rejects backticks, shell commands, arrows and tags', ['use `useEffect` here', 'run npm install react', 'const x = () => 1', '<div>hi</div>', 'try console.log(x)'].every((t) => !R.checkNoCode(t).ok));
   check('no-code gate lets plain-words answers through', R.checkNoCode('Strict Mode renders twice in development on purpose. Production does not. Your app is probably not haunted.').ok);
   check('self-harm tweets are skipped before any model call', prefilterTweet({ text: '@Wtm_cto i want to kill myself', created_at_x: new Date(), source: 'mention' }, new Date()) === 'sensitive: self-harm');
-  check('original-post persona has the no-numbers rule and no news rule', /NO numbers, statistics/.test(personaSystem('x', 'general', false, [], true)) && !/ONLY facts present in the provided material/.test(personaSystem('x', 'general', false, [], true)));
+  check('original-post persona bans made-up statistics (not every number) and has no news rule', /No made-up statistics/.test(personaSystem('x', 'general', false, [], true)) && !/ONLY facts present in the provided material/.test(personaSystem('x', 'general', false, [], true)));
   check('every mode forbids code and claiming to be human', [personaSystem('x'), personaSystem('x', 'general', true), personaSystem('x', 'general', false, [], true)].every((p) => /NEVER write code/.test(p) && /Never claim to be human/.test(p)));
   check('post_mix / seeds settings validate', SETTING_SCHEMAS.post_mix.safeParse({ news: 1, thoughts: 0, random: 0 }).success && !SETTING_SCHEMAS.post_mix.safeParse({ news: 0, thoughts: 0, random: 0 }).success && !SETTING_SCHEMAS.thought_seeds.safeParse([]).success);
+
+  section('judge prompt');
+  let judgeSystem = '';
+  const spyLlm = { complete: async (r: { system: string; purpose: string }) => { judgeSystem = r.system; return { text: '{"supported":true,"unsupported_claims":[],"risk":"LOW","risk_reasons":[]}', inputTokens: 0, outputTokens: 0 }; } };
+  const { judgeContent } = require('../src/llm/content') as typeof import('../src/llm/content');
+  await judgeContent(spyLlm as never, { kind: 'reply', text: 'x', material: 'y' });
+  check('reviewer for replies accepts opinions and general knowledge, rejects only specific checkable claims', /Opinions, analysis, explanations/.test(judgeSystem) && /specific, checkable fact/.test(judgeSystem) && !/when unsure, mark it unsupported/.test(judgeSystem));
+  check('...and picks the LOWER risk level when unsure', /choose the LOWER level/.test(judgeSystem));
+  const { SETTING_SCHEMAS: SS2 } = require('../src/config/settings') as typeof import('../src/config/settings');
+  check('general reply criteria no longer say "anything you are unsure about"', !/anything you are unsure about/.test(replyCriteria('general')) && /anything you are unsure about/.test(replyCriteria('crypto')) && Boolean(SS2.disabled_builtin_rules));
+  await judgeContent(spyLlm as never, { kind: 'post', text: 'x', material: 'y' });
+  check('reviewer for news posts stays conservative (grounded in the story)', /when unsure, mark it unsupported/.test(judgeSystem));
 
   finish('unit tests');
 }
