@@ -28,6 +28,10 @@ export interface Settings {
   replyEnabled: boolean;
   /** 'crypto': reply only to crypto talk. 'general': any everyday topic (politics, tragedies, advice etc. stay off). */
   replyScope: 'crypto' | 'general';
+  /** relative weights of the three kinds of post (news-based / crypto thoughts / random & funny) */
+  postMix: { news: number; thoughts: number; random: number };
+  thoughtSeeds: string[];
+  randomSeeds: string[];
   searchEnabled: boolean;
   newsMaxAgeHours: number;
   includeSourceLink: boolean;
@@ -62,6 +66,31 @@ const win = z.object({
   end: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
 });
 
+export const DEFAULT_THOUGHT_SEEDS = [
+  'crypto culture and the people in it',
+  'why wallets and self-custody still confuse everyone',
+  'the bear market mood versus the bull market mood',
+  'how stablecoins, ETFs and exchanges work (evergreen explainer)',
+  'memecoin culture and degen habits',
+  'what makes a crypto project last instead of fade',
+  'the gap between crypto twitter and normal people',
+  'builders versus speculators',
+  'security habits everyone ignores until it hurts',
+  'how narratives form and fade in crypto',
+];
+export const DEFAULT_RANDOM_SEEDS = [
+  'AI assistants and what they are bad at',
+  'the pain of debugging code',
+  'gaming and the backlog nobody finishes',
+  'internet culture and memes',
+  'tech products that overpromise',
+  'productivity advice that never works',
+  'late-night thoughts',
+  'coffee, sleep and the lack of both',
+  'life as an AI-run account on the internet',
+  'things that sound smart but are not',
+];
+
 /** key -> validator. This is also the WHITELIST of keys the dashboard may write. */
 export const SETTING_SCHEMAS = {
   bot_status: z.enum(['RUNNING', 'PAUSED']),
@@ -71,7 +100,7 @@ export const SETTING_SCHEMAS = {
   max_total_per_day: z.number().int().min(0).max(HARD_LIMITS.totalPerDay),
   professional_ratio: z.number().min(0).max(1),
   min_confidence: z.number().min(0).max(1),
-  personality: z.string().min(3).max(400),
+  personality: z.string().min(3).max(1500),
   active_hours: z.array(win).max(6),
   min_gap_minutes: z.number().int().min(0).max(1440),
   min_reply_gap_minutes: z.number().int().min(0).max(1440),
@@ -82,6 +111,11 @@ export const SETTING_SCHEMAS = {
   max_replies_per_user_per_day: z.number().int().min(1).max(10),
   reply_enabled: z.boolean(),
   reply_scope: z.enum(['crypto', 'general']),
+  post_mix: z
+    .object({ news: z.number().int().min(0).max(100), thoughts: z.number().int().min(0).max(100), random: z.number().int().min(0).max(100) })
+    .refine((m) => m.news + m.thoughts + m.random > 0, { message: 'at least one weight must be above 0' }),
+  thought_seeds: z.array(z.string().trim().min(3).max(100)).min(1).max(40),
+  random_seeds: z.array(z.string().trim().min(3).max(100)).min(1).max(40),
   search_enabled: z.boolean(),
   news_max_age_hours: z.number().int().min(1).max(72),
   include_source_link: z.boolean(),
@@ -120,7 +154,10 @@ export async function loadSettings(): Promise<Settings> {
     maxBotRepliesPerConversation: pick('max_bot_replies_per_conversation', 3),
     maxRepliesPerUserPerDay: pick('max_replies_per_user_per_day', 2),
     replyEnabled: pick('reply_enabled', true),
-    replyScope: pick('reply_scope', 'crypto'),
+    replyScope: pick('reply_scope', 'general'),
+    postMix: pick('post_mix', { news: 50, thoughts: 30, random: 20 }),
+    thoughtSeeds: pick('thought_seeds', DEFAULT_THOUGHT_SEEDS),
+    randomSeeds: pick('random_seeds', DEFAULT_RANDOM_SEEDS),
     searchEnabled: pick('search_enabled', false),
     newsMaxAgeHours: pick('news_max_age_hours', 12),
     includeSourceLink: pick('include_source_link', false),

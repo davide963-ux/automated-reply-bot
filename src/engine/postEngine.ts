@@ -1,9 +1,10 @@
 import { query } from '../db/client';
 import { getState, setState } from '../db/state';
 import type { Settings } from '../config/settings';
-import { generatePost, type PostType } from '../llm/content';
+import { generateOriginalPost, generatePost, type OriginalKind, type PostType } from '../llm/content';
 import { LlmUnavailableError } from '../llm/client';
 import { logger } from '../lib/logger';
+import { randomUUID } from 'crypto';
 import { contentHash, sha256, tweetLength } from '../lib/text';
 import { activeMinutesPerDay, isWithinActiveHours } from '../lib/time';
 import { config } from '../config/env';
@@ -62,6 +63,27 @@ export function computeNextPostGapMinutes(s: Settings, random: number): number {
   return Math.max(s.minGapMinutes, base * (0.9 + 0.4 * random));
 }
 
+export type PostKind = 'news' | 'thoughts' | 'random';
+
+/**
+ * Which kind of post to try, in order. A weighted draw picks the first; the others follow by weight as fallbacks,
+ * so the account never goes quiet just because no news story qualified. News is only offered when stories exist.
+ */
+export function pickPostKinds(mix: Settings['postMix'], hasNews: boolean, random: number): PostKind[] {
+  const pool = (['news', 'thoughts', 'random'] as const)
+    .map((k) => ({ k, w: mix[k] }))
+    .filter((x) => x.w > 0 && (x.k !== 'news' || hasNews));
+  if (pool.length === 0) return [];
+  const total = pool.reduce((n, x) => n + x.w, 0);
+  let roll = random * total;
+  let first = pool[pool.length - 1]!;
+  for (const x of pool) {
+    if (roll < x.w) { first = x; break; }
+    roll -= x.w;
+  }
+  return [first.k, ...pool.filter((x) => x.k !== first.k).sort((a, b) => b.w - a.w).map((x) => x.k)];
+}
+
 function cleanText(t: string): string {
   return t
     .replace(/^["'“”]+|["'“”]+$/g, '')
@@ -106,7 +128,9 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
       order by n.confidence desc, n.published_at desc nulls last
       limit 8`,
   );
-  if (candidates.length === 0) return idle('no eligible news');
+
+  const kinds = pickPostKinds(s.postMix, candidates.length > 0, deps.random());
+  if (kinds.length === 0) return idle('no eligible news');
 
   const recentPosts = (
     await query<{ content: string; content_type: string; topic: string | null; created_at: Date }>(
@@ -117,103 +141,175 @@ export async function runPostEngine(deps: Deps, s: Settings, deadlineMs?: number
   ).rows;
   const recentTexts = await loadRecentTexts(deps.accountId);
 
-  let attempts = 0;
-  for (const n of candidates) {
-    if (attempts >= MAX_ATTEMPTS_PER_TICK) break;
-    if (deadlineMs !== undefined && Date.now() > deadlineMs) return idle('time budget reached, continuing next tick');
-    // Owner rule: never write about stories containing this phrase (free, nothing is stored: removing the rule revives them).
-    if (findCustomMatch(s.customRules, 'skip_input', 'post', n.title, n.summary ?? '')) continue;
-    const confidence = Number(n.confidence);
-    const importance = Number(n.importance_score);
-    const type = pickPostType({
-      confidence, importance, breakingThreshold: s.breakingThreshold, professionalRatio: s.professionalRatio,
-      recentTypes: recentPosts.map((p) => p.content_type), random: deps.random(),
-    });
+  let attempts = 0; // LLM drafts started in this tick, across all kinds
+  const spent = () => deadlineMs !== undefined && Date.now() > deadlineMs;
 
-    // Topic cool-down: no two posts on the same topic within 3h (breaking news is exempt).
-    if (type !== 'breaking' && n.topic && n.topic !== 'general') {
-      const clash = recentPosts.find((p) => p.topic === n.topic && now.getTime() - p.created_at.getTime() < 3 * 3_600_000);
-      if (clash) continue;
-    }
-
-    attempts++;
-    const withLink = s.includeSourceLink;
-    const maxChars = 270 - (withLink ? LINK_RESERVE : 0);
-
-    let draft;
-    try {
-      draft = await generatePost(deps.llm, {
-        personality: s.personality,
-        type,
-        news: { title: n.title, summary: n.summary ?? '', source: n.source_name ?? 'unknown' },
-        recentPosts: recentPosts.map((p) => p.content),
-        maxChars,
-        instructions: instructionsFor(s.customRules, 'post'),
-      });
-    } catch (err) {
-      log.warn('generation failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
-      await logEvent({ action: 'ERROR', inputRef: n.id, decision: 'GENERATION_FAILED', reason: (err as Error).message, result: 'retry later' });
-      return idle('LLM unavailable');
-    }
-
-    if (draft.action === 'SKIP' || !draft.text) {
-      await query(`update news_items set decision = 'IGNORE', decision_reason = $2 where id = $1`, [n.id, `llm skip: ${draft.reason}`.slice(0, 300)]);
-      await logEvent({ action: 'NEWS_REJECTED', inputRef: n.id, decision: 'IGNORE', reason: draft.reason, result: 'model chose SKIP' });
-      continue;
-    }
-
-    const bare = cleanText(draft.text);
-    const material = `${n.title}\n${n.summary ?? ''}\nSource: ${n.source_name ?? ''}`;
-    const gateReport = await runSafetyGate(deps.llm, { kind: 'post', text: bare, material, recentTexts, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules });
-
-    // Link is appended AFTER the gate (digits inside URLs must not trip the fact check).
-    let content = bare;
-    if (withLink && gateReport.ok) {
-      const candidate = `${bare}\n${n.url}`;
-      if (tweetLength(candidate) <= 280 && candidate.length <= 280) content = candidate;
-    }
-
-    if (!gateReport.ok && gateReport.retryable) {
-      await logEvent({ action: 'ERROR', inputRef: n.id, decision: 'GATE_RETRYABLE', reason: gateReport.reason, result: 'retry later' });
-      return idle('safety judge unavailable');
-    }
-
-    const inserted = await query<{ id: string }>(
-      `insert into posts (account_id, content, content_type, topic, sources, news_item_id, content_hash, idempotency_key, status, rejection_reason)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-       on conflict (idempotency_key) do nothing returning id`,
-      [
-        deps.accountId, content, type, n.topic, JSON.stringify([n.url]), n.id, contentHash(content),
-        sha256(`${deps.accountId}|post|${n.id}`),
-        gateReport.ok ? 'DRAFT' : 'REJECTED',
-        gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
-      ],
-    );
-    const postId = inserted.rows[0]?.id;
-    if (!postId) continue; // this news item already produced a post (race)
-
-    if (!gateReport.ok) {
-      await query('update posts set safety_report = $2, risk_level = $3 where id = $1', [postId, JSON.stringify(gateReport), gateReport.riskLevel]);
-      await logEvent({
-        action: 'CONTENT_REJECTED', inputRef: postId, decision: gateReport.stage, reason: gateReport.reason,
-        result: 'post rejected by safety gate', details: { checks: gateReport.checks, news: n.url },
-      });
-      continue;
-    }
-
-    await logEvent({
-      action: 'POST_GENERATED', inputRef: postId, decision: type, reason: draft.reason, confidence,
-      result: 'passed safety gate', details: { news: n.url },
-    });
-
+  /** After a post was created: publish/queue it and schedule the next one. */
+  const finish = async (postId: string, gateReport: Parameters<typeof routeAfterSafety>[3]): Promise<PostEngineResult> => {
     const result = await routeAfterSafety(deps, 'post', postId, gateReport);
     if (['PUBLISHED', 'DRY_RUN', 'PENDING_APPROVAL', 'UNCERTAIN'].includes(result.status)) {
       const gapMin = computeNextPostGapMinutes(s, deps.random());
       await setState(NEXT_POST_KEY, new Date(now.getTime() + gapMin * 60_000).toISOString());
     }
     return { outcome: 'posted', result, postId };
-  }
+  };
 
+  /** News-based post. null = nothing was posted (not an LLM outage), so the next kind may be tried. */
+  const tryNews = async (): Promise<PostEngineResult | null> => {
+    for (const n of candidates) {
+      if (attempts >= MAX_ATTEMPTS_PER_TICK) break;
+      if (spent()) return idle('time budget reached, continuing next tick');
+      // Owner rule: never write about stories containing this phrase (free, nothing is stored: removing the rule revives them).
+      if (findCustomMatch(s.customRules, 'skip_input', 'post', n.title, n.summary ?? '')) continue;
+      const confidence = Number(n.confidence);
+      const importance = Number(n.importance_score);
+      const type = pickPostType({
+        confidence, importance, breakingThreshold: s.breakingThreshold, professionalRatio: s.professionalRatio,
+        recentTypes: recentPosts.map((p) => p.content_type), random: deps.random(),
+      });
+
+      // Topic cool-down: no two posts on the same topic within 3h (breaking news is exempt).
+      if (type !== 'breaking' && n.topic && n.topic !== 'general') {
+        const clash = recentPosts.find((p) => p.topic === n.topic && now.getTime() - p.created_at.getTime() < 3 * 3_600_000);
+        if (clash) continue;
+      }
+
+      attempts++;
+      const withLink = s.includeSourceLink;
+      const maxChars = 270 - (withLink ? LINK_RESERVE : 0);
+
+      let draft;
+      try {
+        draft = await generatePost(deps.llm, {
+          personality: s.personality,
+          type,
+          news: { title: n.title, summary: n.summary ?? '', source: n.source_name ?? 'unknown' },
+          recentPosts: recentPosts.map((p) => p.content),
+          maxChars,
+          instructions: instructionsFor(s.customRules, 'post'),
+        });
+      } catch (err) {
+        log.warn('generation failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
+        await logEvent({ action: 'ERROR', inputRef: n.id, decision: 'GENERATION_FAILED', reason: (err as Error).message, result: 'retry later' });
+        return idle('LLM unavailable');
+      }
+
+      if (draft.action === 'SKIP' || !draft.text) {
+        await query(`update news_items set decision = 'IGNORE', decision_reason = $2 where id = $1`, [n.id, `llm skip: ${draft.reason}`.slice(0, 300)]);
+        await logEvent({ action: 'NEWS_REJECTED', inputRef: n.id, decision: 'IGNORE', reason: draft.reason, result: 'model chose SKIP' });
+        continue;
+      }
+
+      const bare = cleanText(draft.text);
+      const material = `${n.title}\n${n.summary ?? ''}\nSource: ${n.source_name ?? ''}`;
+      const gateReport = await runSafetyGate(deps.llm, { kind: 'post', text: bare, material, recentTexts, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules });
+
+      // Link is appended AFTER the gate (digits inside URLs must not trip the fact check).
+      let content = bare;
+      if (withLink && gateReport.ok) {
+        const candidate = `${bare}\n${n.url}`;
+        if (tweetLength(candidate) <= 280 && candidate.length <= 280) content = candidate;
+      }
+
+      if (!gateReport.ok && gateReport.retryable) {
+        await logEvent({ action: 'ERROR', inputRef: n.id, decision: 'GATE_RETRYABLE', reason: gateReport.reason, result: 'retry later' });
+        return idle('safety judge unavailable');
+      }
+
+      const inserted = await query<{ id: string }>(
+        `insert into posts (account_id, content, content_type, topic, sources, news_item_id, content_hash, idempotency_key, status, rejection_reason)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         on conflict (idempotency_key) do nothing returning id`,
+        [
+          deps.accountId, content, type, n.topic, JSON.stringify([n.url]), n.id, contentHash(content),
+          sha256(`${deps.accountId}|post|${n.id}`),
+          gateReport.ok ? 'DRAFT' : 'REJECTED',
+          gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
+        ],
+      );
+      const postId = inserted.rows[0]?.id;
+      if (!postId) continue; // this news item already produced a post (race)
+
+      if (!gateReport.ok) {
+        await query('update posts set safety_report = $2, risk_level = $3 where id = $1', [postId, JSON.stringify(gateReport), gateReport.riskLevel]);
+        await logEvent({
+          action: 'CONTENT_REJECTED', inputRef: postId, decision: gateReport.stage, reason: gateReport.reason,
+          result: 'post rejected by safety gate', details: { checks: gateReport.checks, news: n.url },
+        });
+        continue;
+      }
+
+      await logEvent({
+        action: 'POST_GENERATED', inputRef: postId, decision: type, reason: draft.reason, confidence,
+        result: 'passed safety gate', details: { news: n.url },
+      });
+      return finish(postId, gateReport);
+    }
+    return null;
+  };
+
+  /** A post from the account's own mind (a crypto take / explainer / meme, or something random and funny). */
+  const tryOriginal = async (kind: OriginalKind): Promise<PostEngineResult | null> => {
+    if (attempts >= MAX_ATTEMPTS_PER_TICK) return null;
+    if (spent()) return idle('time budget reached, continuing next tick');
+    const seeds = kind === 'thought' ? s.thoughtSeeds : s.randomSeeds;
+    const used = new Set(recentPosts.map((p) => p.topic));
+    const fresh = seeds.filter((x) => !used.has(`mind:${x}`));
+    const pool = fresh.length > 0 ? fresh : seeds;
+    const seed = pool[Math.min(pool.length - 1, Math.floor(deps.random() * pool.length))]!;
+
+    attempts++;
+    let draft;
+    try {
+      draft = await generateOriginalPost(deps.llm, {
+        personality: s.personality, kind, seed, recentPosts: recentPosts.map((p) => p.content), maxChars: 270,
+        instructions: instructionsFor(s.customRules, 'post'),
+      });
+    } catch (err) {
+      log.warn('original generation failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
+      await logEvent({ action: 'ERROR', decision: 'GENERATION_FAILED', reason: (err as Error).message, result: 'retry later' });
+      return idle('LLM unavailable');
+    }
+    if (draft.action === 'SKIP' || !draft.text) return null; // nothing good: stay silent rather than post filler
+
+    const text = cleanText(draft.text);
+    // Material is only the topic seed: any number or $ticker the model adds is rejected by the fact check.
+    const gateReport = await runSafetyGate(deps.llm, {
+      kind: 'post', text, material: seed, recentTexts, original: true, customRules: s.customRules, disabledBuiltinRules: s.disabledBuiltinRules,
+    });
+    if (!gateReport.ok && gateReport.retryable) {
+      await logEvent({ action: 'ERROR', decision: 'GATE_RETRYABLE', reason: gateReport.reason, result: 'retry later' });
+      return idle('safety judge unavailable');
+    }
+
+    const inserted = await query<{ id: string }>(
+      `insert into posts (account_id, content, content_type, topic, sources, news_item_id, content_hash, idempotency_key, status, rejection_reason)
+       values ($1,$2,'flexible',$3,'[]'::jsonb,null,$4,$5,$6,$7)
+       on conflict (idempotency_key) do nothing returning id`,
+      [
+        deps.accountId, text, `mind:${seed}`, contentHash(text), sha256(`${deps.accountId}|post|mind|${randomUUID()}`),
+        gateReport.ok ? 'DRAFT' : 'REJECTED',
+        gateReport.ok ? null : `${gateReport.stage}: ${gateReport.reason}`.slice(0, 500),
+      ],
+    );
+    const postId = inserted.rows[0]?.id;
+    if (!postId) return null;
+
+    if (!gateReport.ok) {
+      await query('update posts set safety_report = $2, risk_level = $3 where id = $1', [postId, JSON.stringify(gateReport), gateReport.riskLevel]);
+      await logEvent({
+        action: 'CONTENT_REJECTED', inputRef: postId, decision: gateReport.stage, reason: gateReport.reason,
+        result: 'original post rejected by safety gate', details: { checks: gateReport.checks, kind, seed },
+      });
+      return null;
+    }
+    await logEvent({ action: 'POST_GENERATED', inputRef: postId, decision: kind, reason: draft.reason, result: 'passed safety gate', details: { kind, seed } });
+    return finish(postId, gateReport);
+  };
+
+  for (const kind of kinds) {
+    const r = kind === 'news' ? await tryNews() : await tryOriginal(kind === 'thoughts' ? 'thought' : 'random');
+    if (r) return r;
+  }
   return idle('no candidate passed generation and the safety gate');
 }
-

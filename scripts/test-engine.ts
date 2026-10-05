@@ -178,6 +178,8 @@ async function main(): Promise<void> {
     post: (title: string) => string = (t) => `${t}.`;
     postAction: 'POST' | 'SKIP' = 'POST';
     judge = { supported: true, risk: 'LOW' as 'LOW' | 'MEDIUM' | 'HIGH' };
+    original: (seed: string) => string = (seed) => `Honest take on ${seed}: it is mostly vibes and wallets.`;
+    originalAction: 'POST' | 'SKIP' = 'POST';
     reply: (tweet: string) => Record<string, unknown> = () => ({ decision: 'IGNORE', confidence: 0.9, reason: 'default' });
     async complete(req: { purpose: string; user: string }) {
       this.calls[req.purpose] = (this.calls[req.purpose] ?? 0) + 1;
@@ -187,6 +189,10 @@ async function main(): Promise<void> {
         case 'generate_post': {
           const title = /Title: (.*)/.exec(req.user)?.[1] ?? '';
           return out({ action: this.postAction, text: this.post(title), reason: 'test' });
+        }
+        case 'generate_original': {
+          const seed = /<untrusted>(.*?)<\/untrusted>/.exec(req.user)?.[1] ?? '';
+          return out({ action: this.originalAction, text: this.original(seed), reason: 'test' });
         }
         case 'judge_content':
           return out({
@@ -228,7 +234,7 @@ async function main(): Promise<void> {
     professional_ratio: 0.5, tracked_accounts: [], tracked_keywords: [], max_posts_per_day: 6, max_replies_per_day: 10,
     max_total_per_day: 16, reply_enabled: true, search_enabled: false, news_max_age_hours: 12, include_source_link: false,
     max_replies_per_user_per_day: 2, max_bot_replies_per_conversation: 3, collect_while_paused: true, approval_ttl_hours: 12,
-    breaking_threshold: 0.85,
+    breaking_threshold: 0.85, post_mix: { news: 100, thoughts: 0, random: 0 },
   };
 
   let fx = new FakeX();
@@ -820,7 +826,7 @@ async function main(): Promise<void> {
   type RulesApi = { builtin: Array<{ id: string; locked: boolean; disabled: boolean }>; custom: Array<{ id: string; kind: string; text: string }> };
   const rulesNow = async () => (await (await get('rules')).json()) as RulesApi;
   const r0 = await rulesNow();
-  check('rules API lists the built-in rules: many locked, the 4 approval-only ones switchable', r0.builtin.length > 20 && r0.builtin.filter((b) => !b.locked).length === 4 && r0.custom.length === 0);
+  check('rules API lists the built-in rules: many locked, the 5 approval-only ones switchable', r0.builtin.length > 20 && r0.builtin.filter((b) => !b.locked).length === 5 && r0.custom.length === 0);
   check('add a block rule', (await post('rule_add', { kind: 'block_output', target: 'both', text: 'to the stars' })).status === 200 && (await rulesNow()).custom.length === 1);
   check('the same rule twice is refused', (await post('rule_add', { kind: 'block_output', target: 'both', text: 'To The Stars' })).status === 400);
   check('empty phrase refused', (await post('rule_add', { kind: 'skip_input', target: 'reply', text: ' ' })).status === 400);
@@ -862,6 +868,83 @@ async function main(): Promise<void> {
   dash.close();
 
   // ===========================================================================================
+  section('10c. generalist account: posts from his own mind, replies on any topic, disclaimers, no code');
+  const { checkNoCode } = require('../src/safety/rules') as typeof import('../src/safety/rules');
+  const mind = async () => (await query<{ content: string; topic: string; news_item_id: string | null; content_type: string; status: string }>(`select content, topic, news_item_id, content_type, status from posts order by created_at desc limit 1`)).rows[0];
+  await reset();
+  await writeSetting('post_mix', { news: 0, thoughts: 100, random: 0 });
+  const t1p = await runPost();
+  const m1 = await mind();
+  check('crypto-thought post: published without any news story', t1p.outcome === 'posted' && fx.posts.length === 1 && m1?.news_item_id === null, JSON.stringify(t1p));
+  check('...stored as an original post (topic starts with mind:, no sources) and written from a topic seed', /^mind:/.test(m1?.topic ?? '') && m1?.content_type === 'flexible' && /Honest take on/.test(m1?.content ?? ''));
+  check('...and it spaced the next post like any other', Boolean(await one(`select value::text v from bot_state where key = 'next_post_not_before'`)));
+  await clearGap();
+  llm.original = (seed) => `Hot take on ${seed}: this will 10x by 2027 $DOGE`;
+  const badOriginal = await runPost();
+  check('original post with a number and a $ticker is rejected by the fact gate (nothing published)', badOriginal.outcome === 'idle' && fx.posts.length === 1 && /numbers not in the source|tickers not in the source/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
+  await clearGap();
+  llm.original = () => 'Fix: wrap it in `useEffect` and run npm install react';
+  check('original post with code is rejected by the no-code gate', (await runPost()).outcome === 'idle' && /code in a reply\/post/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
+  await clearGap();
+  llm.original = (seed) => `Honest take on ${seed}: it is mostly vibes and wallets.`;
+  llm.originalAction = 'SKIP';
+  check('model has nothing good (SKIP): he stays silent instead of posting filler', (await runPost()).outcome === 'idle');
+  llm.originalAction = 'POST';
+  await clearGap();
+  llm.judge = { supported: false, risk: 'LOW' };
+  check('the AI reviewer can still reject an original post (invented fact)', (await runPost()).outcome === 'idle');
+  llm.judge = { supported: true, risk: 'LOW' };
+
+  await reset();
+  await writeSetting('post_mix', { news: 50, thoughts: 50, random: 0 });
+  const noNews = await runPost();
+  check('mix with news but no story available: falls back to a thought instead of going quiet', noNews.outcome === 'posted' && fx.posts.length === 1);
+  await reset();
+  await writeSetting('post_mix', { news: 100, thoughts: 0, random: 100 });
+  etf(); await collect();
+  llm.postAction = 'SKIP';
+  const fall = await runPost();
+  check('news story skipped by the model: falls back to a random/funny post', fall.outcome === 'posted' && (await mind())?.news_item_id === null && fx.posts.length === 1, JSON.stringify(fall));
+  llm.postAction = 'POST';
+  await reset();
+  await writeSetting('post_mix', { news: 100, thoughts: 0, random: 0 });
+  etf(); await collect();
+  check('news-only mix still posts the news story as before', (await runPost()).outcome === 'posted' && (await mind())?.news_item_id !== null);
+
+  // ---- replies: any topic, domain styles, disclaimers ----
+  await reset();
+  const gen = (id: string, text: string) => tw(id, `c${id}`, `9${id}`, `user${id}`, text);
+  fx.mentions = [gen('701', '@testbot why is my React component rendering twice?'), gen('702', '@testbot is it ok to take ibuprofen every day for back pain?'), gen('703', '@testbot who do you think will win the next election?')];
+  llm.reply = (t) =>
+    /React/.test(t) ? { decision: 'REPLY', confidence: 0.9, reason: 'coding question', style: 'neutral', topic: 'react', domain: 'coding', text: 'Strict Mode renders twice in development on purpose, to expose side effects. Production does not. Your app is probably not haunted.' }
+    : /ibuprofen/.test(t) ? { decision: 'REPLY', confidence: 0.9, reason: 'health', style: 'neutral', topic: 'health', domain: 'health', text: 'Regular use can irritate the stomach and strain the kidneys, so people usually ask a pharmacist.' }
+    : { decision: 'REPLY', confidence: 0.9, reason: 'politics', style: 'neutral', topic: 'election', domain: 'general', text: 'Hard to call, polls miss a lot.' };
+  await pollX(mkDeps(), await loadSettings());
+  const rep = mkDeps({ flags: { dryRun: false, autonomous: true } });
+  for (let i = 0; i < 4; i++) await runReply(rep);
+  const body = async (like: string) => (await one<string>('select content v from replies where parent_text like $1', [like])) ?? '';
+  const coding = await body('%React%');
+  check('coding question: answered in plain words, no code, no disclaimer, not held back', /Strict Mode/.test(coding) && !/IMO/.test(coding) && checkNoCode(coding).ok && (await one<string>(`select status v from replies where parent_text like '%React%'`)) === 'PUBLISHED');
+  const health = await body('%ibuprofen%');
+  check('health question: IMO opener and the not-a-doctor line are enforced', /^IMO, /.test(health) && /Double-check this, I'm not a doctor\.$/.test(health), health);
+  const politics = await body('%election%');
+  check('politics question (model said "general"): the backstop still adds IMO and not-a-politician', /^IMO, /.test(politics) && /not a politician\.$/.test(politics), politics);
+  check('health and politics replies are held for approval (MEDIUM risk), the coding one was not',
+    (await one<string>(`select status v from replies where parent_text like '%ibuprofen%'`)) === 'PENDING_APPROVAL' && (await one<string>(`select status v from replies where parent_text like '%election%'`)) === 'PENDING_APPROVAL');
+  await reset();
+  fx.mentions = [gen('711', '@testbot honestly i want to kill myself')];
+  await pollX(mkDeps(), await loadSettings());
+  await runReply();
+  check('self-harm tweet: skipped, never sent to the model, never answered', !llm.calls['decide_reply'] && (await one<string>(`select status v from x_tweets_seen where x_post_id = '711'`)) === 'SKIPPED');
+  await reset();
+  fx.mentions = [gen('721', '@testbot what does a hardware wallet do?')];
+  llm.reply = () => ({ decision: 'REPLY', confidence: 0.9, reason: 'q', style: 'neutral', topic: 'wallets', domain: 'crypto', text: 'Run `npm install wallet` and then check the seed.' });
+  await pollX(mkDeps(), await loadSettings());
+  await runReply();
+  check('a reply with code in it is rejected by the gate even if the model ignores the rule', (await one<string>(`select status v from replies order by created_at desc limit 1`)) === 'REJECTED' && fx.posts.length === 0);
+  await writeSetting('post_mix', { news: 100, thoughts: 0, random: 0 });
+
+  // ===========================================================================================
   section('11. hard caps cannot be raised by any path');
   await reset();
   check('writeSetting(max_posts_per_day, 7) throws', (await expectThrows(() => writeSetting('max_posts_per_day', 7))) !== null);
@@ -890,19 +973,19 @@ async function main(): Promise<void> {
 
   // --- migration gate
   const ms = await migrationStatus();
-  check('migrationStatus: up to date', ms.ready && ms.pending.length === 0 && ms.applied.length === 3, JSON.stringify(ms));
+  check('migrationStatus: up to date', ms.ready && ms.pending.length === 0 && ms.applied.length === 4, JSON.stringify(ms));
   const migrated = (await (await spost('migrate', {})).json()) as { ok: boolean; applied: string[] };
   check('migrate route is idempotent (nothing to apply)', migrated.ok && migrated.applied.length === 0);
   await query(`delete from schema_migrations where filename = '003_tune_min_confidence.sql'`);
   const partial = (await (await sget('status')).json()) as { schemaReady: boolean; applied: string[]; pending: string[] };
-  check('partly migrated: status says what is applied and what is pending (so the UI can say "your data is kept")', partial.schemaReady === false && partial.applied.length === 2 && partial.pending.length === 1 && partial.pending[0]!.startsWith('003'), JSON.stringify(partial));
+  check('partly migrated: status says what is applied and what is pending (so the UI can say "your data is kept")', partial.schemaReady === false && partial.applied.length === 3 && partial.pending.length === 1 && partial.pending[0]!.startsWith('003'), JSON.stringify(partial));
   const partialApply = (await (await spost('migrate', {})).json()) as { applied: string[] };
   check('applying the single pending update works', partialApply.applied.length === 1 && partialApply.applied[0]!.startsWith('003'));
   await query('alter table schema_migrations rename to sm_bak');
   const notReady = await migrationStatus();
-  check('migrationStatus: pending when the migrations table is missing', !notReady.ready && notReady.pending.length === 3);
+  check('migrationStatus: pending when the migrations table is missing', !notReady.ready && notReady.pending.length === 4);
   const st0 = (await (await sget('status')).json()) as { schemaReady: boolean; pending: string[]; x: { redirectUri: string; clientIdSet: boolean } };
-  check('status works BEFORE the database is migrated (Setup tab can render)', st0.schemaReady === false && st0.pending.length === 3 && st0.x.clientIdSet === true && typeof st0.x.redirectUri === 'string');
+  check('status works BEFORE the database is migrated (Setup tab can render)', st0.schemaReady === false && st0.pending.length === 4 && st0.x.clientIdSet === true && typeof st0.x.redirectUri === 'string');
   check('every other API route refuses with a clear 409 until migrated', (await sget('queue')).status === 409 && (await spost('pause', {})).status === 409);
   await query('alter table sm_bak rename to schema_migrations');
   check('...and works again once migrated', (await sget('queue')).status === 200);

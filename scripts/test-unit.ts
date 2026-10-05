@@ -433,7 +433,7 @@ async function main(): Promise<void> {
   check('crypto scope: replies only to crypto discussion (unchanged)', /substantive crypto discussion/.test(cryptoCrit) && !/everyday topic/.test(cryptoCrit));
   check('general scope: everyday topics allowed', /everyday topic/.test(generalCrit) && !/substantive crypto discussion/.test(generalCrit));
   check('both scopes keep politics / trolling / shilling / advice-bait on the IGNORE list', [cryptoCrit, generalCrit].every((c) => /politics/.test(c) && /trolling/.test(c) && /shilling/.test(c) && /price-prediction bait/.test(c)));
-  check('general scope also ignores health/legal/tragedy and forbids invented anecdotes', /health\/medical, legal and tragedy/.test(generalCrit) && /never invent personal anecdotes/.test(generalCrit));
+  check('general scope: any topic, politics/health only in the IMO format, still ignores self-harm, diagnosis, legal advice and tragedies', /IMO/.test(generalCrit) && /self-harm/.test(generalCrit) && /diagnosis, dose or treatment/.test(generalCrit) && /legal advice/.test(generalCrit) && /tragedies/.test(generalCrit) && /invent personal anecdotes/.test(generalCrit));
   check('persona says "about crypto" only in crypto scope', /about crypto/.test(personaSystem('x', 'crypto')) && !/about crypto/.test(personaSystem('x', 'general')));
   check('persona keeps the hard rules in both scopes', /No financial advice/.test(personaSystem('x', 'general')) && /No politics/.test(personaSystem('x', 'general')));
   check('reply_scope setting only accepts crypto|general', SETTING_SCHEMAS.reply_scope.safeParse('general').success && !SETTING_SCHEMAS.reply_scope.safeParse('anything').success);
@@ -452,7 +452,7 @@ async function main(): Promise<void> {
   const sysReply = personaSystem('x', 'general', true);
   check('reply mode: concepts may use general knowledge, specifics need the FACTS', /FACTS provided/.test(sysReply) && /general knowledge/.test(sysReply));
   check('post mode keeps the strict only-the-material rule', /ONLY facts present in the provided material/.test(personaSystem('x', 'crypto')) && !/general knowledge/.test(personaSystem('x', 'crypto')));
-  check('reply mode still bans advice, politics and invented numbers', /No financial advice/.test(sysReply) && /No politics/.test(sysReply) && /never invent them/.test(sysReply));
+  check('reply mode still bans advice and invented numbers, and puts politics/health behind the IMO format', /No financial advice/.test(sysReply) && /never invent them/.test(sysReply) && /start the reply with "IMO,"/.test(sysReply) && /not a doctor/.test(sysReply) && /not a politician/.test(sysReply));
 
   section('custom rules');
   const CU = require('../src/safety/custom') as typeof import('../src/safety/custom');
@@ -464,7 +464,7 @@ async function main(): Promise<void> {
   check('instructions are collected per target', CU.instructionsFor([rule('instruction', 'Be brief', 'reply'), rule('instruction', 'No jokes', 'post')], 'reply').join() === 'Be brief');
   check('persona prompt carries owner instructions and still says the hard rules win', /OWNER INSTRUCTIONS/.test(personaSystem('x', 'crypto', false, ['Be brief'])) && /HARD RULES above always win/.test(personaSystem('x', 'crypto', false, ['Be brief'])) && !/OWNER INSTRUCTIONS/.test(personaSystem('x')));
   check('a disabled switchable rule stops forcing approval; HIGH rules cannot be disabled', R.riskFloorFor(['risk.politics'], 'new election results').level === 'LOW' && R.riskFloorFor(R.SWITCHABLE_RULE_IDS, 'founder dies').level === 'HIGH');
-  check('exactly the 4 approval-only built-ins are switchable', R.SWITCHABLE_RULE_IDS.length === 4 && R.builtinCatalog().filter((b) => !b.locked).length === 4);
+  check('exactly the 5 approval-only built-ins are switchable', R.SWITCHABLE_RULE_IDS.length === 5 && R.builtinCatalog().filter((b) => !b.locked).length === 5);
   check('tweet prefilter honours a skip rule', prefilterTweet({ text: 'soon wen moon for everyone', created_at_x: new Date(), source: 'tracked_account' }, new Date(), [rule('skip_input', 'wen moon', 'reply')])?.includes('your rule') === true);
 
   section('LLM deadline');
@@ -476,6 +476,31 @@ async function main(): Promise<void> {
   let seenDeadline: number | undefined;
   await withDeadline({ complete: async (r) => { seenDeadline = r.deadlineMs; return { text: '', inputTokens: 0, outputTokens: 0 }; } }, 12345).complete({ system: '', user: '', maxTokens: 1, purpose: 't' });
   check('withDeadline stamps every call', seenDeadline === 12345);
+
+  section('generalist: post mix, disclaimers, no code');
+  const { pickPostKinds } = require('../src/engine/postEngine') as typeof import('../src/engine/postEngine');
+  const { ensureDisclaimer, sensitiveDomain } = require('../src/llm/disclaimer') as typeof import('../src/llm/disclaimer');
+  const mix = { news: 50, thoughts: 30, random: 20 };
+  check('post mix: a low roll picks news first, the others follow as fallbacks by weight', pickPostKinds(mix, true, 0.0).join() === 'news,thoughts,random');
+  check('post mix: a middle roll picks a crypto thought', pickPostKinds(mix, true, 0.6).join() === 'thoughts,news,random');
+  check('post mix: a high roll picks random', pickPostKinds(mix, true, 0.99).join() === 'random,news,thoughts');
+  check('post mix: no news available -> news is never offered', !pickPostKinds(mix, false, 0.0).includes('news') && pickPostKinds(mix, false, 0.0).length === 2);
+  check('post mix: news-only with no news -> nothing to do', pickPostKinds({ news: 100, thoughts: 0, random: 0 }, false, 0.5).length === 0);
+  check('post mix: weight 0 means never', !pickPostKinds({ news: 50, thoughts: 0, random: 50 }, true, 0.3).includes('thoughts'));
+  const draw = (n: number) => Array.from({ length: n }, (_, i) => pickPostKinds(mix, true, (i + 0.5) / n)[0]);
+  const counts = draw(1000).reduce<Record<string, number>>((a, k) => ({ ...a, [k!]: (a[k!] ?? 0) + 1 }), {});
+  check('post mix: over many rolls the shares are ~50 / 30 / 20', Math.abs((counts.news ?? 0) - 500) <= 5 && Math.abs((counts.thoughts ?? 0) - 300) <= 5 && Math.abs((counts.random ?? 0) - 200) <= 5, JSON.stringify(counts));
+  check('disclaimer: health gets IMO opener and the not-a-doctor line', ensureDisclaimer('Vitamin D helps your body use calcium.', 'health') === "IMO, Vitamin D helps your body use calcium. Double-check this, I'm not a doctor.");
+  check('disclaimer: politics gets the not-a-politician line', /not a politician\.$/.test(ensureDisclaimer('Voter ID rules differ a lot by country.', 'politics') ?? ''));
+  check('disclaimer: already complete text is left alone', ensureDisclaimer("IMO, it varies. Double-check this, I'm not a doctor.", 'health') === "IMO, it varies. Double-check this, I'm not a doctor.");
+  check('disclaimer: too long for a tweet -> null (the reply is dropped, never truncated)', ensureDisclaimer('x'.repeat(260), 'health') === null);
+  check('sensitive backstop catches health and politics, ignores normal topics', sensitiveDomain('what is a good dose of ibuprofen, my doctor is away') === 'health' && sensitiveDomain('who will win the election') === 'politics' && sensitiveDomain('why is my react component rendering twice') === null);
+  check('no-code gate rejects backticks, shell commands, arrows and tags', ['use `useEffect` here', 'run npm install react', 'const x = () => 1', '<div>hi</div>', 'try console.log(x)'].every((t) => !R.checkNoCode(t).ok));
+  check('no-code gate lets plain-words answers through', R.checkNoCode('Strict Mode renders twice in development on purpose. Production does not. Your app is probably not haunted.').ok);
+  check('self-harm tweets are skipped before any model call', prefilterTweet({ text: '@Wtm_cto i want to kill myself', created_at_x: new Date(), source: 'mention' }, new Date()) === 'sensitive: self-harm');
+  check('original-post persona has the no-numbers rule and no news rule', /NO numbers, statistics/.test(personaSystem('x', 'general', false, [], true)) && !/ONLY facts present in the provided material/.test(personaSystem('x', 'general', false, [], true)));
+  check('every mode forbids code and claiming to be human', [personaSystem('x'), personaSystem('x', 'general', true), personaSystem('x', 'general', false, [], true)].every((p) => /NEVER write code/.test(p) && /Never claim to be human/.test(p)));
+  check('post_mix / seeds settings validate', SETTING_SCHEMAS.post_mix.safeParse({ news: 1, thoughts: 0, random: 0 }).success && !SETTING_SCHEMAS.post_mix.safeParse({ news: 0, thoughts: 0, random: 0 }).success && !SETTING_SCHEMAS.thought_seeds.safeParse([]).success);
 
   finish('unit tests');
 }
