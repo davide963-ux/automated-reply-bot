@@ -39,6 +39,26 @@ const INTERACTION: Record<SeenRow['source'], string> = {
   keyword_search: 'keyword_search',
 };
 
+const STOPWORDS = new Set(
+  'the and for are was were why how what when where who did does this that with from have has had will would about last next been you your can could not but all any our out its into than then they them there their just like get got one two new now today yesterday please tell why'.split(' '),
+);
+const wordsOf = (t: string): string[] => [...new Set(t.toLowerCase().replace(/https?:\/\/\S+/g, ' ').match(/[a-z0-9]{3,}/g) ?? [])].filter((w) => !STOPWORDS.has(w));
+
+/** Recent collected news that matches the tweet (2+ distinct shared words): the only source of specific facts. */
+export function pickRelevantNews(tweetText: string, items: Array<{ title: string; summary: string | null; source: string | null }>, max = 3): string[] {
+  const words = wordsOf(tweetText);
+  if (words.length === 0) return [];
+  return items
+    .map((i) => {
+      const hay = new Set(wordsOf(`${i.title} ${i.summary ?? ''}`));
+      return { i, score: words.filter((w) => hay.has(w)).length };
+    })
+    .filter((x) => x.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map(({ i }) => `${i.title}${i.summary ? ` - ${i.summary}` : ''} (${i.source ?? 'news'})`);
+}
+
 /** Pure pre-filter: does this tweet deserve an LLM call at all? Returns a skip reason, or null. */
 export function prefilterTweet(t: Pick<SeenRow, 'text' | 'created_at_x' | 'source'>, now: Date): string | null {
   const bare = t.text.replace(/https?:\/\/\S+/g, '').replace(/(^|\s)@\w+/g, '').replace(/\s+/g, ' ').trim();
@@ -158,6 +178,16 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
       ...ours.reverse().map((x) => ({ who: 'us' as const, text: x.content })),
     ];
 
+    // ---- facts: recent collected news that matches the tweet ----
+    const recentNews = (
+      await query<{ title: string; summary: string | null; source: string | null }>(
+        `select n.title, n.summary, s.name as source from news_items n left join sources s on s.id = n.source_id
+          where coalesce(n.published_at, n.fetched_at) > now() - interval '48 hours'
+          order by coalesce(n.published_at, n.fetched_at) desc limit 150`,
+      )
+    ).rows;
+    const facts = pickRelevantNews(t.text, recentNews);
+
     // ---- decision + draft (one LLM call) ----
     let d;
     try {
@@ -168,6 +198,7 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
         history,
         maxChars: MAX_REPLY_CHARS,
         scope: s.replyScope,
+        facts,
       });
     } catch (err) {
       log.warn('reply decision failed, will retry next tick', { err: err instanceof LlmUnavailableError ? err.message : err });
@@ -187,7 +218,7 @@ export async function runReplyEngine(deps: Deps, s: Settings, deadlineMs?: numbe
     }
 
     const text = d.text.replace(/^(@\w+\s+)+/, '').trim(); // X adds the @mention itself for replies
-    const material = [...history.map((h) => h.text), t.text].join('\n');
+    const material = [...history.map((h) => h.text), t.text, ...facts].join('\n');
     const report = await runSafetyGate(deps.llm, { kind: 'reply', text, material, recentTexts, riskContext: [t.text] });
 
     if (!report.ok && report.retryable) {

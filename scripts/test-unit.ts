@@ -438,6 +438,22 @@ async function main(): Promise<void> {
   check('persona keeps the hard rules in both scopes', /No financial advice/.test(personaSystem('x', 'general')) && /No politics/.test(personaSystem('x', 'general')));
   check('reply_scope setting only accepts crypto|general', SETTING_SCHEMAS.reply_scope.safeParse('general').success && !SETTING_SCHEMAS.reply_scope.safeParse('anything').success);
 
+  section('reply facts');
+  const { pickRelevantNews } = require('../src/engine/replyEngine') as typeof import('../src/engine/replyEngine');
+  const newsItems = [
+    { title: 'Spot Ether ETFs record $1.2 billion inflows', summary: 'Friday saw the largest daily inflows since launch.', source: 'CoinDesk' },
+    { title: 'Local bakery wins award', summary: 'Sourdough', source: 'Bread Weekly' },
+    { title: 'Bitcoin miners add hashrate', summary: null, source: 'The Block' },
+  ];
+  const picked = pickRelevantNews('why did etf inflows spike the last friday', newsItems);
+  check('a question about ETF inflows picks the matching story, not the bakery', picked.length === 1 && /Spot Ether ETFs/.test(picked[0]!) && /CoinDesk/.test(picked[0]!), JSON.stringify(picked));
+  check('a single shared word is not enough (no weak matches)', pickRelevantNews('bitcoin is great', newsItems).length === 0);
+  check('no usable words -> no facts', pickRelevantNews('why did the', newsItems).length === 0);
+  const sysReply = personaSystem('x', 'general', true);
+  check('reply mode: concepts may use general knowledge, specifics need the FACTS', /FACTS provided/.test(sysReply) && /general knowledge/.test(sysReply));
+  check('post mode keeps the strict only-the-material rule', /ONLY facts present in the provided material/.test(personaSystem('x', 'crypto')) && !/general knowledge/.test(personaSystem('x', 'crypto')));
+  check('reply mode still bans advice, politics and invented numbers', /No financial advice/.test(sysReply) && /No politics/.test(sysReply) && /never invent them/.test(sysReply));
+
   finish('unit tests');
 }
 
