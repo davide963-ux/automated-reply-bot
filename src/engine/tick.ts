@@ -3,6 +3,7 @@ import { query, dbHealthy } from '../db/client';
 import { setState } from '../db/state';
 import { loadSettings } from '../config/settings';
 import { logger } from '../lib/logger';
+import { withDeadline } from '../llm/client';
 import { collectNews } from '../news/collector';
 import { logEvent } from '../services/events';
 import { expireStaleApprovals, publishApprovedQueue } from './control';
@@ -24,6 +25,8 @@ const LOCK_TTL_SECONDS = 300;
  */
 export const TICK_START_JOBS_MS = 35_000;
 export const TICK_ENGINE_MS = 25_000;
+/** Hard stop for any single LLM call: the function limit is 60 s, keep a margin for the database and the response. */
+export const TICK_HARD_MS = 50_000;
 
 export interface TickReport {
   skipped?: 'locked' | 'db_down';
@@ -61,7 +64,8 @@ async function recordEngineResult(kind: 'post' | 'reply' | 'poll', result: strin
  *   REPLY         decide -> draft -> safety gate -> route   (only RUNNING)
  *   MAINTENANCE   expire stale approvals, retry approved
  */
-export async function runTick(deps: Deps): Promise<TickReport> {
+export async function runTick(rawDeps: Deps): Promise<TickReport> {
+  const startedAt = Date.now();
   if (!(await dbHealthy())) {
     log.error('database unreachable: tick skipped, nothing will be published');
     return { skipped: 'db_down', jobs: [] };
@@ -73,9 +77,10 @@ export async function runTick(deps: Deps): Promise<TickReport> {
     const settings = await loadSettings();
     const running = settings.botStatus === 'RUNNING';
     const collect = running || settings.collectWhilePaused;
-    const now = deps.now();
-    const startedAt = Date.now();
+    const now = rawDeps.now();
     const engineDeadline = startedAt + TICK_ENGINE_MS;
+    // Every Grok call is cut short before the function would be killed (a 504), the work is retried next tick.
+    const deps: Deps = { ...rawDeps, llm: withDeadline(rawDeps.llm, startedAt + TICK_HARD_MS) };
 
     const jobs = await runDueJobs(
       {

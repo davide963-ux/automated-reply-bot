@@ -467,6 +467,16 @@ async function main(): Promise<void> {
   check('exactly the 4 approval-only built-ins are switchable', R.SWITCHABLE_RULE_IDS.length === 4 && R.builtinCatalog().filter((b) => !b.locked).length === 4);
   check('tweet prefilter honours a skip rule', prefilterTweet({ text: 'soon wen moon for everyone', created_at_x: new Date(), source: 'tracked_account' }, new Date(), [rule('skip_input', 'wen moon', 'reply')])?.includes('your rule') === true);
 
+  section('LLM deadline');
+  const { callTimeoutMs, withDeadline } = require('../src/llm/client') as typeof import('../src/llm/client');
+  check('no deadline: the usual 60 s timeout', callTimeoutMs({}) === 60_000);
+  check('a deadline 30 s away shortens the timeout to leave a margin', callTimeoutMs({ deadlineMs: 1_030_000 }, 1_000_000) === 28_000);
+  check('a far deadline never lengthens it past 60 s', callTimeoutMs({ deadlineMs: 9_000_000 }, 1_000_000) === 60_000);
+  check('under 4 s left: the call is refused instead of causing a 504', (() => { try { callTimeoutMs({ deadlineMs: 1_003_000 }, 1_000_000); return false; } catch (e) { return /time budget/.test((e as Error).message); } })());
+  let seenDeadline: number | undefined;
+  await withDeadline({ complete: async (r) => { seenDeadline = r.deadlineMs; return { text: '', inputTokens: 0, outputTokens: 0 }; } }, 12345).complete({ system: '', user: '', maxTokens: 1, purpose: 't' });
+  check('withDeadline stamps every call', seenDeadline === 12345);
+
   finish('unit tests');
 }
 

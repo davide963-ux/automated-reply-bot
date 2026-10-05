@@ -13,6 +13,8 @@ export interface LlmRequest {
   temperature?: number;
   /** For logs and usage accounting only. */
   purpose: string;
+  /** Epoch ms after which the caller (a serverless function) will be killed: the HTTP call is cut short before it. */
+  deadlineMs?: number;
 }
 
 export interface LlmResponse {
@@ -30,6 +32,22 @@ export class LlmUnavailableError extends Error {
     super(`LLM unavailable: ${reason}`);
     this.name = 'LlmUnavailableError';
   }
+}
+
+const MAX_CALL_MS = 60_000;
+const MIN_CALL_MS = 4_000;
+
+/** HTTP timeout for one LLM call: 60 s, but never past the caller's deadline (so a slow model cannot cause a 504). */
+export function callTimeoutMs(req: Pick<LlmRequest, 'deadlineMs'>, now = Date.now()): number {
+  if (req.deadlineMs === undefined) return MAX_CALL_MS;
+  const left = req.deadlineMs - now;
+  if (left < MIN_CALL_MS) throw new LlmUnavailableError('tick time budget used up, will retry on the next tick');
+  return Math.min(MAX_CALL_MS, left - 2_000);
+}
+
+/** Every call made through the returned client inherits `deadlineMs`. */
+export function withDeadline(inner: LlmClient, deadlineMs: number): LlmClient {
+  return { complete: (req) => inner.complete({ ...req, deadlineMs: req.deadlineMs ?? deadlineMs }) };
 }
 
 /** Claude models that reason by default and accept `output_config.effort` (generation 4.6 and later). */
@@ -137,7 +155,7 @@ export function createProviderClient(): LlmClient {
             headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
             body: JSON.stringify(anthropicBody(model, req, config.llm.effort)),
           },
-          60_000,
+          callTimeoutMs(req),
         );
         if (!res.ok) {
           // The API's error message names the problem (bad model id, no credit, bad key) and never echoes the key.
@@ -167,7 +185,7 @@ export function createProviderClient(): LlmClient {
             headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
             body: JSON.stringify(openaiBody(model, req, { effort: config.llm.effort, sendTemperature: config.llm.sendTemperature })),
           },
-          60_000,
+          callTimeoutMs(req),
         );
         if (!res.ok) {
           // Error shapes differ: {"error":{"message":..}} (OpenAI) or {"error":"..."} (xAI). Neither echoes the key.
