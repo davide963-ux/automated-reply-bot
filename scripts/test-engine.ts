@@ -110,7 +110,7 @@ async function main(): Promise<void> {
   const { ensureAccount } = require('../src/db/accounts') as typeof import('../src/db/accounts');
   const { loadSettings, writeSetting } = require('../src/config/settings') as typeof import('../src/config/settings');
   const { collectNews } = require('../src/news/collector') as typeof import('../src/news/collector');
-  const { runPostEngine, createMindPost } = require('../src/engine/postEngine') as typeof import('../src/engine/postEngine');
+  const { runPostEngine, createMindPost, createNewsPost } = require('../src/engine/postEngine') as typeof import('../src/engine/postEngine');
   const { runReplyEngine } = require('../src/engine/replyEngine') as typeof import('../src/engine/replyEngine');
   const { pollX } = require('../src/engine/ingest') as typeof import('../src/engine/ingest');
   const { publishRow } = require('../src/engine/publisher') as typeof import('../src/engine/publisher');
@@ -821,6 +821,30 @@ async function main(): Promise<void> {
   const ev = (await (await get('events&limit=5')).json()) as { events: unknown[] };
   check('events API', ev.events.length > 0 && ev.events.length <= 5);
   check('unknown route -> 404', (await get('nope')).status === 404);
+  // ---- "Post a news story now" button ----
+  await reset();
+  etf(); await collect();
+  check('newspost without the x-dashboard header is refused (CSRF)', (await post('newspost', {}, {})).status === 403);
+  const nTimer = await one(`select value::text v from bot_state where key = 'next_post_not_before'`);
+  const np = await post('newspost', {});
+  const npBody = (await np.json()) as { ok: boolean; status: string; text: string; postId: string };
+  check('the button posts the best story right now (queued here: approval mode)', np.status === 200 && npBody.ok && npBody.status === 'PENDING_APPROVAL' && npBody.text.length > 0, JSON.stringify(npBody));
+  check('...the post is tied to the news story, and the story is used up', (await one<string>(`select news_item_id::text v from posts where id = $1`, [npBody.postId])) !== null && (await one(`select count(*)::text v from news_items n where n.decision = 'POST' and not exists (select 1 from posts p where p.news_item_id = n.id)`)) === '0');
+  check('...and it did not move the scheduled-post timer', (await one(`select value::text v from bot_state where key = 'next_post_not_before'`)) === nTimer);
+  const np2 = await post('newspost', {});
+  check('no postable story left: a clear message, no post', np2.status === 400 && /no postable story/.test(((await np2.json()) as { error: string }).error));
+  await writeSetting('bot_status', 'PAUSED');
+  check('paused: the news button says so', (await post('newspost', {})).status === 400);
+  await writeSetting('bot_status', 'RUNNING');
+  await reset();
+  etf(); await collect();
+  llm.postAction = 'SKIP';
+  const npSkip = await createNewsPost(mkDeps({ flags: { dryRun: false, autonomous: true } }), await loadSettings());
+  check('model skips the story: a clear message and nothing is posted', !npSkip.ok && /try again/.test(npSkip.error) && fx.posts.length === 0, JSON.stringify(npSkip));
+  await reset();
+  etf(); await collect();
+  const npAuto = await createNewsPost(mkDeps({ flags: { dryRun: false, autonomous: true } }), await loadSettings());
+  check('autonomous: the news button publishes straight to X', npAuto.ok && npAuto.status === 'PUBLISHED' && fx.posts.length === 1, JSON.stringify(npAuto));
   // ---- "Post from his mind" button ----
   await writeSetting('post_mix', { news: 100, thoughts: 50, random: 50 });
   llm.original = (seed) => `Honest take on ${seed}: it is mostly vibes and wallets.`;
