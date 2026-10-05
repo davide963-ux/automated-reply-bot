@@ -114,10 +114,11 @@ const views = {
         el('div', {}, 'LLM: ', s.llm.configured ? 'configured' : 'not configured'),
         el('div', {}, 'Waiting for approval: ', s.queue.pendingPosts + s.queue.pendingReplies, ' · UNCERTAIN: ', s.queue.uncertain, ' · eligible news: ', s.queue.eligibleNews)),
       el('div', { className: 'card' }, el('b', {}, 'Last engine result'),
-        ...['post', 'reply'].map((k) => {
+        ...['post', 'reply', 'poll'].map((k) => {
           const e = s.engines && s.engines[k];
-          return el('div', {}, k.toUpperCase(), ': ', e ? e.result : 'not run yet', e ? el('span', { className: 'mut' }, '  (' + fmt(e.at) + ')') : '');
-        })),
+          return el('div', {}, k === 'poll' ? 'X POLL' : k.toUpperCase(), ': ', e ? e.result : 'not run yet', e ? el('span', { className: 'mut' }, '  (' + fmt(e.at) + ')') : '');
+        }),
+        el('div', { className: 'mut' }, 'Tweets seen so far: ', Object.entries(s.tweetsSeen || {}).map(([k, v]) => k + ' ' + v).join(' · ') || 'none')),
       el('div', { className: 'card' }, el('b', {}, 'Scheduled jobs'), el('table', {}, s.jobs.map((j) => el('tr', {}, el('td', {}, j.job_type), el('td', {}, j.status), el('td', { className: 'mut' }, fmt(j.run_at)), el('td', { className: 'mut' }, j.last_error || ''))))),
     ];
   },

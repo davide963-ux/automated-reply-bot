@@ -97,7 +97,11 @@ async function status(deps: Deps) {
     engines: {
       post: (await getState<{ result: string; at: string }>('last_post_result')) ?? null,
       reply: (await getState<{ result: string; at: string }>('last_reply_result')) ?? null,
+      poll: (await getState<{ result: string; at: string }>('last_poll_result')) ?? null,
     },
+    tweetsSeen: Object.fromEntries(
+      (await query<{ status: string; n: string }>(`select status, count(*)::text n from x_tweets_seen group by status`)).rows.map((r) => [r.status, Number(r.n)]),
+    ),
   };
 }
 
