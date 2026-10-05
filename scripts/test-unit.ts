@@ -327,7 +327,7 @@ async function main(): Promise<void> {
   const bt = probeBundle('tick', '/api/tick');
   check('tick (no sql/) answers 401, not a crash', bt.status === 401, JSON.stringify(bt));
   const bd = probeBundle('dashboard', '/api/dashboard');
-  check('dashboard page (no sql/) still serves the login prompt', bd.status === 401, JSON.stringify(bd));
+  check('dashboard page (no sql/) still serves the login page', bd.status === 200 && /Toad Guru/.test(bd.body), JSON.stringify(bd).slice(0, 200));
   rmTmp(bundle, { recursive: true, force: true });
 
   section('plain-language hints for X refusals');
@@ -522,6 +522,27 @@ async function main(): Promise<void> {
   check('built-in rules list shows the identity rule as locked', R.builtinCatalog().some((b) => b.id === 'gate.human' && b.locked));
   const { DEFAULT_RANDOM_SEEDS: seedsNow } = require('../src/config/settings') as typeof import('../src/config/settings');
   check('default random seeds no longer push human-life jokes', !seedsNow.includes('late-night thoughts') && !seedsNow.includes('coffee, sleep and the lack of both') && seedsNow.some((x) => /training data/.test(x)));
+
+  section('Toad Guru login page and session cookie');
+  const { loginHtml } = require('../src/dashboard/login') as typeof import('../src/dashboard/login');
+  const SES = require('../src/dashboard/session') as typeof import('../src/dashboard/session');
+  const lg = loginHtml('lognonce');
+  const lgJs = lg.split('<script nonce="lognonce">')[1]!.split('</script>')[0]!;
+  let lgOk = true; let lgErr = '';
+  try { new Function(lgJs); } catch (e) { lgOk = false; lgErr = (e as Error).message; }
+  check('login page script is valid JavaScript', lgOk, lgErr);
+  check('login page: titled Toad Guru, never innerHTML, no inline style attributes (strict CSP), no external hosts', /<title>Toad Guru<\/title>/.test(lg) && !lg.includes('innerHTML') && !/\sstyle="/.test(lg) && !/https?:\/\/(?!www\.w3)/i.test(lg.replace(/https?:\/\/localhost/g, '')));
+  check('login page uses the nonce on its script and style, and only same-site images', lg.includes('<script nonce="lognonce">') && lg.includes('<style nonce="lognonce">') && lg.includes('src="/toad-guru.png"') && lg.includes('href="/toad-icon.png"'));
+  check('login page has the password field, show button and the funny bits', ['id="pw"', 'type="password"', 'autocomplete="current-password"', 'id="eye"', 'No peeking!', 'Enter the swamp', 'g-jump', 'g-shake', 'prefers-reduced-motion'].every((x) => lg.includes(x)));
+  const tok = 'a-long-dashboard-token-123456';
+  const sess = SES.createSession(tok, 1_000_000_000_000);
+  check('session cookie: valid for its owner token', SES.verifySession(sess, tok, 1_000_000_000_000 + 60_000));
+  check('session cookie: expires after 7 days', !SES.verifySession(sess, tok, 1_000_000_000_000 + 8 * 24 * 3600 * 1000));
+  check('session cookie: another token (or a changed token) does not validate it', !SES.verifySession(sess, 'another-token-xxxxxxxxxxxx', 1_000_000_000_000 + 60_000));
+  check('session cookie: tampering with the expiry or the signature is refused', !SES.verifySession('9999999999.' + sess.split('.')[1], tok, 1_000_000_000_000) && !SES.verifySession(sess.slice(0, -3) + 'abc', tok, 1_000_000_000_000) && !SES.verifySession('', tok) && !SES.verifySession('garbage', tok));
+  const ck = SES.sessionCookie('v', true);
+  check('Set-Cookie is HttpOnly, SameSite=Strict, Secure on https, and clearable', /HttpOnly/.test(ck) && /SameSite=Strict/.test(ck) && /Secure/.test(ck) && !/Secure/.test(SES.sessionCookie('v', false)) && /Max-Age=0/.test(SES.sessionCookie('', true, 0)));
+  check('cookie header parsing', SES.parseCookies('a=1; toad_session=xyz; b=2').toad_session === 'xyz');
 
   finish('unit tests');
 }

@@ -791,8 +791,38 @@ async function main(): Promise<void> {
   const post = (r: string, body: unknown, headers: Record<string, string> = { 'x-dashboard': '1' }) =>
     fetch(`${base}?r=${r}`, { method: 'POST', headers: { ...H, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
-  check('no credentials -> 401 + Basic challenge', (await fetch(base)).status === 401 && (await fetch(base)).headers.has('www-authenticate'));
+  const anon = await fetch(base);
+  const anonHtml = await anon.text();
+  const anonCsp = anon.headers.get('content-security-policy') ?? '';
+  check('anonymous visitor gets the Toad Guru login page (no browser password popup)', anon.status === 200 && /Toad Guru/.test(anonHtml) && !anon.headers.has('www-authenticate') && anon.headers.get('cache-control') === 'no-store');
+  check('login page CSP: nonce for script and style, images only from this site, no framing', /script-src 'nonce-/.test(anonCsp) && /img-src 'self' data:/.test(anonCsp) && /frame-ancestors 'none'/.test(anonCsp) && !/unsafe-inline/.test(anonCsp));
+  check('anonymous API call -> 401 JSON, no Basic challenge', (await fetch(`${base}?r=status`)).status === 401 && !(await fetch(`${base}?r=status`)).headers.has('www-authenticate'));
   check('wrong token -> 401', (await fetch(base, { headers: { authorization: 'Bearer wrong' } })).status === 401);
+  const loginPost = (password: unknown, headers: Record<string, string> = { 'x-dashboard': '1' }) =>
+    fetch(`${base}?r=login`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify({ password }) });
+  check('login without the x-dashboard header -> 403 (CSRF)', (await loginPost(DASH_TOKEN, {})).status === 403);
+  check('login from a foreign Origin -> 403', (await loginPost(DASH_TOKEN, { 'x-dashboard': '1', origin: 'https://evil.example' })).status === 403);
+  const badLogin = await loginPost('not-the-password');
+  check('wrong password -> 401, no cookie', badLogin.status === 401 && !badLogin.headers.get('set-cookie'));
+  const goodLogin = await loginPost(DASH_TOKEN, { 'x-dashboard': '1', 'x-forwarded-proto': 'https' });
+  const setCookie = goodLogin.headers.get('set-cookie') ?? '';
+  check('right password -> 200 and a session cookie: HttpOnly, SameSite=Strict, Secure', goodLogin.status === 200 && /^toad_session=/.test(setCookie) && /HttpOnly/.test(setCookie) && /SameSite=Strict/.test(setCookie) && /Secure/.test(setCookie), setCookie);
+  const cookieHeader = { cookie: setCookie.split(';')[0]! };
+  const viaCookie = await fetch(base, { headers: cookieHeader });
+  check('with the session cookie the dashboard opens (not the login page)', viaCookie.status === 200 && /Run tick now/.test(await viaCookie.text()));
+  check('with the session cookie the API works', (await fetch(`${base}?r=status`, { headers: cookieHeader })).status === 200);
+  check('a forged cookie does not work', (await fetch(`${base}?r=status`, { headers: { cookie: 'toad_session=9999999999.forged' } })).status === 401);
+  check('writes with the cookie still need the x-dashboard header (CSRF)', (await fetch(`${base}?r=pause`, { method: 'POST', headers: { ...cookieHeader, 'content-type': 'application/json' }, body: '{}' })).status === 403);
+  const loggedOut = await fetch(`${base}?r=logout`, { method: 'POST', headers: { ...cookieHeader, 'x-dashboard': '1', 'content-type': 'application/json' }, body: '{}' });
+  check('logout clears the cookie', loggedOut.status === 200 && /Max-Age=0/.test(loggedOut.headers.get('set-cookie') ?? ''));
+  // brute force: 8 wrong passwords from one client lock that client out, then even the right one is refused
+  await query(`delete from bot_state where key like 'login_fail:%'`);
+  for (let i = 0; i < 8; i++) await loginPost('wrong-' + i, { 'x-dashboard': '1', 'x-forwarded-for': '203.0.113.9' });
+  const locked = await loginPost(DASH_TOKEN, { 'x-dashboard': '1', 'x-forwarded-for': '203.0.113.9' });
+  check('8 wrong passwords lock that client out (429), even for the right password', locked.status === 429);
+  const otherClient = await loginPost(DASH_TOKEN, { 'x-dashboard': '1', 'x-forwarded-for': '198.51.100.7' });
+  check('...but another client can still log in', otherClient.status === 200);
+  await query(`delete from bot_state where key like 'login_fail:%'`);
   const page = await fetch(base, { headers: H });
   const html = await page.text();
   const csp = page.headers.get('content-security-policy') ?? '';

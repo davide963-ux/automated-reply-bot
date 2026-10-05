@@ -2,7 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { config } from '../config/env';
 import { query } from '../db/client';
-import { getState } from '../db/state';
+import { getState, setState } from '../db/state';
 import { migrationStatus, runMigrations } from '../db/migrate';
 import { CUSTOM_RULE_KINDS, SETTING_SCHEMAS, customRuleSchema, loadSettings, writeSetting, type CustomRule } from '../config/settings';
 import { SWITCHABLE_RULE_IDS, builtinCatalog } from '../safety/rules';
@@ -15,6 +15,8 @@ import { describeDbError } from '../lib/dberror';
 import { logger } from '../lib/logger';
 import { getUsageToday } from '../services/rateLimit';
 import { dashboardHtml } from './html';
+import { loginHtml } from './login';
+import { SESSION_COOKIE, createSession, hashIp, parseCookies, sessionCookie, verifySession } from './session';
 
 const log = logger.child({ module: 'dashboard' });
 const MAX_BODY = 64 * 1024;
@@ -107,6 +109,48 @@ async function status(deps: Deps) {
   };
 }
 
+const LOGIN_MAX_FAILURES = 8;
+const LOGIN_WINDOW_MS = 15 * 60_000;
+
+const isHttps = (req: IncomingMessage) => req.headers['x-forwarded-proto'] === 'https' || Boolean((req.socket as { encrypted?: boolean }).encrypted);
+
+function clientIp(req: IncomingMessage): string {
+  const fwd = req.headers['x-forwarded-for'];
+  const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim();
+  return first || req.socket.remoteAddress || 'unknown';
+}
+
+/** Failed-login counter per client (hashed IP) in bot_state. Never blocks login if the database is not ready yet. */
+async function loginFailures(key: string): Promise<{ count: number; first: number }> {
+  try {
+    const v = await getState<{ count: number; first: number }>(key);
+    if (v && Date.now() - v.first < LOGIN_WINDOW_MS) return v;
+  } catch { /* database not migrated yet: no throttle state */ }
+  return { count: 0, first: Date.now() };
+}
+
+async function handleLogin(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // CSRF: a custom header cannot be sent cross-site without a CORS preflight, which we never allow.
+  if (req.headers['x-dashboard'] !== '1') return send(res, 403, { error: 'missing x-dashboard header' });
+  const origin = req.headers.origin;
+  if (origin && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'cross-origin request refused' });
+
+  const key = `login_fail:${hashIp(clientIp(req))}`;
+  const fails = await loginFailures(key);
+  if (fails.count >= LOGIN_MAX_FAILURES) return send(res, 429, { error: 'too many attempts: try again in 15 minutes' });
+
+  const body = await readJson(req);
+  const supplied = typeof body.password === 'string' ? body.password.slice(0, 500) : '';
+  const token = config.runtime.dashboardToken ?? '';
+  if (!token || !timingSafeEqual(digest(supplied), digest(token))) {
+    await new Promise((r) => setTimeout(r, 500)); // slow down guessing
+    try { await setState(key, { count: fails.count + 1, first: fails.count === 0 ? Date.now() : fails.first }); } catch { /* not migrated yet */ }
+    return send(res, 401, { error: 'wrong password' });
+  }
+  try { await query('delete from bot_state where key = $1', [key]); } catch { /* not migrated yet */ }
+  return send(res, 200, { ok: true }, { 'set-cookie': sessionCookie(createSession(token), isHttps(req)) });
+}
+
 /**
  * Framework-free request handler (works under node:http and Vercel functions).
  * Routing is by ?r=<route> so it behaves the same at "/" and at "/api/dashboard".
@@ -118,14 +162,31 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
         return send(res, 503, { error: 'dashboard disabled: set DASHBOARD_TOKEN (min 16 chars)' });
       }
       const auth = req.headers.authorization;
-      if (!isAuthorized(auth, config.runtime.dashboardToken)) {
-        await new Promise((r) => setTimeout(r, 400)); // slow down guessing
-        return send(res, 401, { error: 'unauthorized' }, { 'www-authenticate': 'Basic realm="crypto-x-agent", charset="UTF-8"' });
+      const cookies = parseCookies(req.headers.cookie);
+      const authed = isAuthorized(auth, config.runtime.dashboardToken) || verifySession(cookies[SESSION_COOKIE], config.runtime.dashboardToken);
+      const url0 = new URL(req.url ?? '/', 'http://local');
+      const route0 = url0.searchParams.get('r');
+      const method0 = req.method ?? 'GET';
+
+      if (!authed) {
+        // Wrong or missing Basic / Bearer credentials: plain 401, and NO browser password popup.
+        if (auth) {
+          await new Promise((r) => setTimeout(r, 400)); // slow down guessing
+          return send(res, 401, { error: 'unauthorized' });
+        }
+        if (route0 === 'login' && method0 === 'POST') return handleLogin(req, res);
+        if (!route0 && method0 === 'GET') {
+          const nonce = randomBytes(16).toString('base64');
+          return send(res, 200, loginHtml(nonce), {
+            'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+          });
+        }
+        return send(res, 401, { error: 'unauthorized' });
       }
 
-      const url = new URL(req.url ?? '/', 'http://local');
-      const route = url.searchParams.get('r');
-      const method = req.method ?? 'GET';
+      const url = url0;
+      const route = route0;
+      const method = method0;
 
       if (!route) {
         if (method !== 'GET') return send(res, 405, { error: 'method not allowed' });
@@ -142,6 +203,11 @@ export function createDashboardHandler(getDeps: () => Deps | Promise<Deps>) {
         if (origin && new URL(origin).host !== req.headers.host) return send(res, 403, { error: 'cross-origin request refused' });
       } else if (method !== 'GET') {
         return send(res, 405, { error: 'method not allowed' });
+      }
+
+      if (route0 === 'logout' && method0 === 'POST') {
+        if (req.headers['x-dashboard'] !== '1') return send(res, 403, { error: 'missing x-dashboard header' });
+        return send(res, 200, { ok: true }, { 'set-cookie': sessionCookie('', isHttps(req), 0) });
       }
 
       // The database must be migrated before anything else works. Status and migrate are the only exceptions,

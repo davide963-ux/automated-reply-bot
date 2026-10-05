@@ -26,7 +26,7 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px 8px;border-bottom:1p
 pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px}#msg{position:fixed;bottom:12px;right:12px;max-width:80vw}
 </style></head><body>
 <header><h1>crypto-x-agent</h1><span id="state" class="pill">…</span><span id="flags" class="mut"></span>
-<span class="grow"></span><button id="pause" class="bad">Pause</button><button id="resume" class="ok">Resume</button><button id="news" title="Writes one post about the best postable news story and publishes (or queues) it now">Post a news story now</button><button id="mind" title="Writes one post from his own mind and publishes (or queues) it now">Post from his mind</button><button id="tick">Run tick now</button></header>
+<span class="grow"></span><button id="pause" class="bad">Pause</button><button id="resume" class="ok">Resume</button><button id="news" title="Writes one post about the best postable news story and publishes (or queues) it now">Post a news story now</button><button id="mind" title="Writes one post from his own mind and publishes (or queues) it now">Post from his mind</button><button id="tick">Run tick now</button><button id="logout" title="Sign out of this browser">Log out</button></header>
 <nav id="tabs"></nav><main id="view"></main><div id="msg" class="card" hidden></div>
 <script nonce="${nonce}">
 const base = location.pathname;
@@ -69,6 +69,7 @@ const postNow = (route, what) => act(async () => {
 });
 $('#mind').onclick = postNow('mindpost', 'from-his-mind');
 $('#news').onclick = postNow('newspost', 'news');
+$('#logout').onclick = async () => { try { await api('logout', {}); } catch (_) {} location.reload(); };
 $('#tick').onclick = act(async () => { const r = await api('tick', {}); toast('tick: ' + (r.skipped || r.jobs.map((j) => j.job + (j.ok ? '' : ' FAILED')).join(', ') || 'nothing due')); });
 
 const views = {
