@@ -82,8 +82,15 @@ export async function runTick(rawDeps: Deps): Promise<TickReport> {
     // Every Grok call is cut short before the function would be killed (a 504), the work is retried next tick.
     const deps: Deps = { ...rawDeps, llm: withDeadline(rawDeps.llm, startedAt + TICK_HARD_MS) };
 
+    // Order = priority when the time budget runs out: the cheap housekeeping jobs go FIRST so the slow ones
+    // (Grok calls) can never starve them (a starved MAINTENANCE leaves approved posts unpublished).
     const jobs = await runDueJobs(
       {
+        RECONCILE: async () => void (await reconcileUncertain(deps)),
+        MAINTENANCE: async () => {
+          await expireStaleApprovals();
+          if (running) await publishApprovedQueue(deps);
+        },
         ...(collect ? { COLLECT_NEWS: async () => void (await collectNews(deps.accountId, deps.fetchText, now)) } : {}),
         ...(collect
           ? {
@@ -94,7 +101,6 @@ export async function runTick(rawDeps: Deps): Promise<TickReport> {
               },
             }
           : {}),
-        RECONCILE: async () => void (await reconcileUncertain(deps)),
         ...(running
           ? {
               POST: async () => {
@@ -109,10 +115,6 @@ export async function runTick(rawDeps: Deps): Promise<TickReport> {
               },
             }
           : {}),
-        MAINTENANCE: async () => {
-          await expireStaleApprovals();
-          if (running) await publishApprovedQueue(deps);
-        },
       },
       now,
       deps.accountId,
