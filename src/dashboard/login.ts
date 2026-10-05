@@ -35,7 +35,6 @@ body{background:var(--green);color:var(--ink);font:16px/1.4 ui-rounded,"Trebuche
 .stage{position:relative;width:min(380px,100%);height:calc(var(--fw) * 2.32 * .62);z-index:1}
 .frogwrap{position:absolute;left:50%;bottom:calc(var(--fw) * 2.32 * -.38);width:var(--fw);transform:translate(-50%,var(--hide,0));
   transition:transform .5s cubic-bezier(.34,1.4,.64,1);animation:enter .9s cubic-bezier(.34,1.56,.64,1) both .15s}
-body.hiding .frogwrap{--hide:64%;opacity:0;transition:transform .45s cubic-bezier(.5,0,.4,1),opacity .15s ease .3s}
 @keyframes enter{from{transform:translate(-50%,130%)}to{transform:translate(-50%,var(--hide,0))}}
 .gag{transform-origin:50% 100%}
 .frogtilt{transform-origin:50% 100%;transform:rotate(var(--tilt,0deg));transition:transform .25s ease-out}
@@ -89,13 +88,25 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
 .err{min-height:1.3em;margin:10px 0 0;text-align:center;color:#b3122a;font-weight:700;font-size:14px}
 .fine{margin:6px 0 0;text-align:center;font-size:12px;color:#6f9482}
 
-/* photobomb frog */
-.pb{position:fixed;right:-6px;bottom:-4px;width:84px;transform:translate(130%,20%) rotate(-12deg);transition:transform .6s cubic-bezier(.34,1.56,.64,1);z-index:0;pointer-events:none}
-.pb.in{transform:translate(18%,6%) rotate(-12deg)}.pb.wave{animation:pbwave .6s ease-in-out 2}
-@keyframes pbwave{0%,100%{transform:translate(18%,6%) rotate(-12deg)}50%{transform:translate(18%,6%) rotate(-3deg)}}
+/* he lies down on the card when idle or when he gives up */
+.lying{position:absolute;left:50%;bottom:-4px;width:min(250px,66vw);height:auto;transform:translate(-50%,125%);opacity:0;z-index:1;
+  transition:transform .65s cubic-bezier(.34,1.3,.64,1),opacity .2s;user-select:none;-webkit-user-drag:none}
+body.nap .lying,body.giveup .lying{transform:translate(-50%,0);opacity:1}
+body.giveup .lying.fall{animation:fall .95s cubic-bezier(.3,.8,.4,1) both}
+@keyframes fall{0%{transform:translate(-50%,-320%) rotate(-30deg);opacity:1}58%{transform:translate(-50%,6%) rotate(5deg)}78%{transform:translate(-50%,-9%) rotate(-2deg)}100%{transform:translate(-50%,0) rotate(0)}}
+body.hiding .frogwrap,body.nap .frogwrap,body.giveup .frogwrap{--hide:64%;opacity:0;transition:transform .45s cubic-bezier(.5,0,.4,1),opacity .15s ease .3s}
+.zz{position:absolute;left:calc(50% + 70px);bottom:70px;font-weight:900;color:#fff;opacity:0;pointer-events:none;z-index:2;text-shadow:0 2px 6px rgba(13,59,39,.35)}
+body.nap .zz{animation:zzz 2.6s ease-in infinite;animation-delay:var(--zd)}
+@keyframes zzz{0%{opacity:0;transform:translate(0,0) scale(.6)}20%{opacity:1}100%{opacity:0;transform:translate(26px,-70px) scale(1.5)}}
+
+/* thinking sticker on the card: shown while the password is being checked, and after a wrong one */
+.think{position:absolute;right:-16px;top:-40px;width:92px;height:auto;z-index:4;pointer-events:none;transform:scale(0) rotate(-25deg);opacity:0;
+  transition:transform .45s cubic-bezier(.34,1.7,.64,1),opacity .15s;filter:drop-shadow(0 8px 12px rgba(13,59,39,.3))}
+.think.on{transform:scale(1) rotate(9deg);opacity:1;animation:wobble 1.6s ease-in-out .45s infinite}
+@keyframes wobble{0%,100%{transform:scale(1) rotate(9deg)}50%{transform:scale(1.05) rotate(2deg)}}
 
 @media (max-width:420px){h1{font-size:30px}.card{padding:22px 18px 18px}}
-@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.frogwrap{transform:translate(-50%,var(--hide,0))}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}.frogwrap{transform:translate(-50%,var(--hide,0))}.think.on{transform:scale(1) rotate(9deg)}}
 </style></head><body>
 <div class="bg" aria-hidden="true">
   <span class="pad" id="p1"></span><span class="pad" id="p2"></span><span class="pad" id="p3"></span><span class="pad" id="p4"></span>
@@ -108,8 +119,11 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
     <div class="frogwrap" id="frogwrap"><div class="gag" id="gag"><div class="frogtilt" id="tilt">
       <img class="frog" id="frog" src="/toad-guru.png" alt="Toad Guru, a calm frog in a red shirt and yellow overalls" width="224" height="520" draggable="false">
     </div></div></div>
+    <img class="lying" id="lying" src="/toad-lying.png" alt="" aria-hidden="true" width="560" height="452">
+    <span class="zz" id="z1" aria-hidden="true">z</span><span class="zz" id="z2" aria-hidden="true">Z</span><span class="zz" id="z3" aria-hidden="true">z</span>
   </div>
   <form class="card" id="form" autocomplete="on">
+    <img class="think" id="think" src="/toad-think.png" alt="" aria-hidden="true" width="280" height="278">
     <h1>Toad Guru</h1>
     <p class="tag" id="tag">Enlightenment costs one password.</p>
     <label class="sr" for="pw">Password</label>
@@ -122,13 +136,12 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
     <p class="fine">Click the toad. He enjoys it.</p>
   </form>
 </main>
-<img class="pb" id="pb" src="/toad-guru.png" alt="" aria-hidden="true" width="224" height="520">
 <script nonce="${nonce}">
 (function () {
   var $ = function (s) { return document.querySelector(s); };
   var body = document.body, gag = $('#gag'), tilt = $('#tilt'), bubble = $('#bubble'), form = $('#form'), card = $('#form');
-  var pw = $('#pw'), err = $('#err'), go = $('#go'), tag = $('#tag'), eye = $('#eye'), pb = $('#pb'), frog = $('#frog');
-  var base = location.pathname, busy = false, typing = false, bubbleTimer;
+  var pw = $('#pw'), err = $('#err'), go = $('#go'), tag = $('#tag'), eye = $('#eye'), frog = $('#frog'), lying = $('#lying'), think = $('#think');
+  var base = location.pathname, busy = false, typing = false, wrong = 0, lastAct = Date.now(), bubbleTimer, thinkTimer, giveTimer;
 
   // pond decoration positions (set here so no inline style attributes are needed under the strict CSP)
   var deco = {
@@ -143,6 +156,10 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
     if (v[2]) e.style.setProperty('--s', v[2]);
     if (id.charAt(0) === 'r') e.style.setProperty('--dl', v[3]); else e.style.setProperty('--d', v[3]);
   });
+  ['z1', 'z2', 'z3'].forEach(function (id, i) {
+    var z = document.getElementById(id);
+    z.style.setProperty('--zd', (i * 0.85) + 's'); z.style.fontSize = (16 + i * 6) + 'px';
+  });
 
   var TAGS = ['Enlightenment costs one password.', 'Patience is a lily pad.', 'Think like a pond: still, deep, slightly damp.',
     'Ribbit is a complete sentence.', 'No flies were harmed in this login.', 'Every great swamp starts with a single hop.'];
@@ -151,6 +168,7 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
   var IDLE = ['hop', 'wiggle', 'lean', 'big', 'flip', 'spin'];
   var GAGLINE = { hop: 'Boing!', wiggle: 'Vibes.', lean: 'Casual lean.', big: 'Big brain energy.', flip: 'Wheee!', spin: 'Wheee!' };
   var pick = function (a) { return a[Math.floor(Math.random() * a.length)]; };
+  var on = function (c) { body.classList.add(c); }, off = function (c) { body.classList.remove(c); };
 
   function say(text, ms, bad) {
     bubble.textContent = text;
@@ -161,6 +179,10 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
   function play(name) { gag.className = 'gag'; void gag.offsetWidth; gag.className = 'gag g-' + name; }
   gag.addEventListener('animationend', function (e) { if (e.target === gag && gag.className.indexOf('g-jump') < 0) gag.className = 'gag'; });
 
+  // the thinking sticker (shown while the password is checked, and after a wrong one)
+  function thinkOn(ms) { clearTimeout(thinkTimer); think.classList.add('on'); if (ms) thinkTimer = setTimeout(thinkOff, ms); }
+  function thinkOff() { clearTimeout(thinkTimer); think.classList.remove('on'); }
+
   // rotating tagline
   var ti = 0;
   setInterval(function () {
@@ -168,9 +190,28 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
     setTimeout(function () { ti = (ti + 1) % TAGS.length; tag.textContent = TAGS[ti]; tag.style.opacity = '1'; }, 350);
   }, 5200);
 
+  // napping: after 30 s of nothing he lies down on the card; any movement wakes him
+  function nap(yes) {
+    if (yes) { if (body.classList.contains('nap') || busy) return; off('hiding'); on('nap'); say('zzz... wake me when you remember it.', 4000); }
+    else if (body.classList.contains('nap')) { off('nap'); say("I'm up! I'm up!", 1800); play('hop'); }
+  }
+  function activity() { lastAct = Date.now(); if (body.classList.contains('nap')) nap(false); }
+  ['pointerdown', 'keydown', 'touchstart'].forEach(function (ev) { window.addEventListener(ev, activity, { passive: true }); });
+  setInterval(function () { if (!busy && !typing && !document.hidden && Date.now() - lastAct > 30000) nap(true); }, 1000);
+  lying.addEventListener('click', function () { nap(false); });
+
+  // he gives up after every third wrong password: he falls over and lies on the card
+  function giveUp() {
+    clearTimeout(giveTimer);
+    off('hiding'); on('giveup'); lying.classList.remove('fall'); void lying.offsetWidth; lying.classList.add('fall');
+    say('I give up. Ribbit.', 3200, true);
+    giveTimer = setTimeout(function () { off('giveup'); lying.classList.remove('fall'); say('Okay, one more try.', 1800); }, 4200);
+  }
+
   // he looks toward the pointer
   var raf = 0;
   window.addEventListener('pointermove', function (e) {
+    activity();
     if (raf) return;
     raf = requestAnimationFrame(function () {
       raf = 0;
@@ -188,28 +229,16 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
   // random idle gags
   (function loop() {
     setTimeout(function () {
-      if (!busy && !typing && !document.hidden) { var g = pick(IDLE); play(g); if (Math.random() < 0.55) say(GAGLINE[g], 1800); }
+      if (!busy && !typing && !document.hidden && !body.classList.contains('nap') && !body.classList.contains('giveup')) { var g = pick(IDLE); play(g); if (Math.random() < 0.55) say(GAGLINE[g], 1800); }
       loop();
     }, 5500 + Math.random() * 5000);
   })();
 
-  // a small toad photobombs from the corner now and then
-  (function bomb() {
-    setTimeout(function () {
-      if (!busy && window.innerWidth > 560) {
-        pb.className = 'pb in';
-        setTimeout(function () { pb.className = 'pb in wave'; }, 700);
-        setTimeout(function () { pb.className = 'pb'; }, 3200);
-      }
-      bomb();
-    }, 13000 + Math.random() * 9000);
-  })();
-
   // "no peeking": he hides behind the card once you start typing the password (not on the automatic focus at page load)
-  function hideToad() { if (!typing) { typing = true; body.className = 'hiding'; say('No peeking!', 1600); } }
+  function hideToad() { if (!typing) { typing = true; if (!body.classList.contains('giveup')) { on('hiding'); say('No peeking!', 1600); } } }
   pw.addEventListener('keydown', hideToad);
   pw.addEventListener('pointerdown', hideToad);
-  pw.addEventListener('blur', function () { typing = false; body.className = ''; });
+  pw.addEventListener('blur', function () { typing = false; off('hiding'); });
 
   eye.addEventListener('click', function () {
     var show = pw.type === 'password';
@@ -217,14 +246,16 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
     eye.textContent = show ? 'hide' : 'show';
     eye.setAttribute('aria-pressed', show ? 'true' : 'false');
     eye.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
-    if (show) { body.className = ''; say('Hey! I said no peeking. Okay, fine.', 2200); }
+    if (show) { off('hiding'); say('Hey! I said no peeking. Okay, fine.', 2200); }
     pw.focus();
   });
 
   function fail(msg, lines) {
+    wrong++;
     err.textContent = msg;
     card.className = 'card'; void card.offsetWidth; card.className = 'card shake';
-    play('shake'); body.className = ''; say(pick(lines), 2800, true);
+    off('hiding'); thinkOn(2600);
+    if (wrong % 3 === 0) giveUp(); else { play('shake'); say(pick(lines), 2800, true); }
     busy = false; go.disabled = false; go.textContent = 'Enter the swamp';
     pw.value = ''; pw.focus();
   }
@@ -234,13 +265,14 @@ input:focus{border-color:var(--green);box-shadow:0 0 0 4px rgba(76,220,150,.3)}
     if (busy) return;
     err.textContent = '';
     busy = true; go.disabled = true; go.textContent = 'Hopping...';
+    nap(false); thinkOn(0);
     fetch(base + '?r=login', {
       method: 'POST', credentials: 'same-origin',
       headers: { 'content-type': 'application/json', 'x-dashboard': '1' },
       body: JSON.stringify({ password: pw.value })
     }).then(function (res) {
       if (res.ok) {
-        body.className = 'win'; play('jump'); say('Ribbit! Welcome back.', 2000);
+        thinkOff(); off('hiding'); on('win'); play('jump'); say('Ribbit! Welcome back.', 2000);
         setTimeout(function () { location.reload(); }, 1000);
         return;
       }
