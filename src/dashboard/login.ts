@@ -8,6 +8,8 @@ export function loginHtml(nonce: string): string {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><meta name="theme-color" content="#4cdc96">
 <title>Toad Guru</title><link rel="icon" href="/toad-icon.png">
+<script>window.va=window.va||function(){(window.vaq=window.vaq||[]).push(arguments);};</script>
+<script defer src="/_vercel/insights/script.js"></script>
 <style nonce="${nonce}">
 :root{--green:#4cdc96;--green2:#35c47f;--deep:#0f7a47;--ink:#0d3b27;--paper:#fbfffc;--fw:min(150px,38vw)}
 *{box-sizing:border-box}
