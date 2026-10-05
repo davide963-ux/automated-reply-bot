@@ -915,6 +915,10 @@ async function main(): Promise<void> {
   check('...a fabricated claim is still stopped, now by the AI reviewer (nothing published)', badOriginal.outcome === 'idle' && fx.posts.length === 2 && /unsupported claims/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
   llm.judge = { supported: true, risk: 'LOW' };
   await clearGap();
+  llm.original = () => 'Late-night thoughts: what if I just emailed my boss at 2am, questioning every life choice since age 12.';
+  const human = await runPost();
+  check('original post that invents a human life is rejected by the identity rule', human.outcome === 'idle' && /invented human life/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''), JSON.stringify(human));
+  await clearGap();
   llm.original = () => 'Fix: wrap it in `useEffect` and run npm install react';
   check('original post with code is rejected by the no-code gate', (await runPost()).outcome === 'idle' && /code in a reply\/post/.test((await one<string>(`select rejection_reason v from posts where status = 'REJECTED' order by created_at desc limit 1`)) ?? ''));
   await clearGap();

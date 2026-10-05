@@ -3,7 +3,7 @@ import type { LlmClient } from '../llm/client';
 import { judgeContent } from '../llm/content';
 import { logger } from '../lib/logger';
 import {
-  checkAdvice, checkDuplicate, checkFacts, checkLength, checkNoCode, checkSpam, maxRisk, riskFloorFor,
+  checkAdvice, checkDuplicate, checkFacts, checkHumanLife, checkLength, checkNoCode, checkSpam, maxRisk, riskFloorFor,
   type RiskLevel,
 } from './rules';
 import { findCustomMatch } from './custom';
@@ -87,6 +87,9 @@ export async function runSafetyGate(llm: LlmClient, input: GateInput): Promise<S
   if (!r.ok) return stop('spam', r.detail);
 
   r = record('no_code', checkNoCode(input.text));
+  if (!r.ok) return stop('spam', r.detail);
+
+  r = record('human_life', checkHumanLife(input.text));
   if (!r.ok) return stop('spam', r.detail);
 
   r = record('advice', checkAdvice(input.text));
