@@ -942,6 +942,27 @@ async function main(): Promise<void> {
   await pollX(mkDeps(), await loadSettings());
   await runReply();
   check('a reply with code in it is rejected by the gate even if the model ignores the rule', (await one<string>(`select status v from replies order by created_at desc limit 1`)) === 'REJECTED' && fx.posts.length === 0);
+  // ---- over-long and empty drafts must never crash the job (the database caps content at 280 characters) ----
+  await reset();
+  fx.mentions = [gen('731', '@testbot what does a hardware wallet do?'), gen('732', '@testbot what is a stablecoin exactly?')];
+  llm.reply = (t) => /hardware/.test(t)
+    ? { decision: 'REPLY', confidence: 0.9, reason: 'q', style: 'neutral', topic: 'wallets', domain: 'crypto', text: 'A hardware wallet keeps your keys offline. '.repeat(10) }
+    : { decision: 'REPLY', confidence: 0.9, reason: 'q', style: 'neutral', topic: 'stable', domain: 'crypto', text: '@testbot ' };
+  await pollX(mkDeps(), await loadSettings());
+  let crashed = false;
+  for (let i = 0; i < 3; i++) { try { await runReply(); } catch { crashed = true; } }
+  check('a 430-character reply does not crash the reply job (it used to violate the database length check)', !crashed);
+  check('...it is stored as a REJECTED draft (cut to 280) and the tweet is closed, so it is not retried forever',
+    (await one<string>(`select status v from replies where parent_text like '%hardware%'`)) === 'REJECTED' && Number(await one(`select char_length(content)::text v from replies where parent_text like '%hardware%'`)) === 280 &&
+    (await one<string>(`select status v from x_tweets_seen where x_post_id = '731'`)) === 'IGNORED');
+  check('a reply that is empty once the @mention is stripped is ignored, not inserted', (await one<string>(`select status v from x_tweets_seen where x_post_id = '732'`)) === 'IGNORED');
+  await reset();
+  await writeSetting('post_mix', { news: 0, thoughts: 100, random: 0 });
+  llm.original = () => 'Crypto takes age badly. '.repeat(20);
+  let postCrashed = false;
+  try { await runPost(); } catch { postCrashed = true; }
+  check('a 480-character original post is rejected cleanly (stored cut to 280), not a crash', !postCrashed && (await postCount('REJECTED')) === 1 && fx.posts.length === 0);
+  llm.original = (seed) => `Honest take on ${seed}: it is mostly vibes and wallets.`;
   await writeSetting('post_mix', { news: 100, thoughts: 0, random: 0 });
 
   // ===========================================================================================

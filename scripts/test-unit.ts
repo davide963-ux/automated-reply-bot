@@ -124,6 +124,7 @@ async function main(): Promise<void> {
   check('advice: "you should buy"', !R.checkAdvice('you should buy the dip').ok);
   check('advice: price prediction', !R.checkAdvice('BTC will hit $200k').ok);
   check('advice: neutral news passes', R.checkAdvice('ETF inflows hit a record on Tuesday').ok);
+  check('length: a long URL that X counts as 23 but is over 280 raw characters is refused (the database caps raw length)', !R.checkLength('a'.repeat(250) + ' https://example.com/' + 'x'.repeat(40)).ok);
   check('length: 281 fails, 280 passes', !R.checkLength('a'.repeat(281)).ok && R.checkLength('a'.repeat(280)).ok);
   check('risk: hack is MEDIUM', R.riskFloor('Protocol hacked, $20M drained').level === 'MEDIUM');
   check('risk: tragedy is HIGH', R.riskFloor('founder dies in accident').level === 'HIGH');
