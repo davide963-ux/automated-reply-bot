@@ -534,6 +534,9 @@ async function main(): Promise<void> {
   check('login page: titled Toad Guru, never innerHTML, no inline style attributes (strict CSP), no external hosts', /<title>Toad Guru<\/title>/.test(lg) && !lg.includes('innerHTML') && !/\sstyle="/.test(lg) && !/https?:\/\/(?!www\.w3)/i.test(lg.replace(/https?:\/\/localhost/g, '')));
   check('login page uses the nonce on its script and style, and only same-site images', lg.includes('<script nonce="lognonce">') && lg.includes('<style nonce="lognonce">') && lg.includes('src="/toad-guru.png"') && lg.includes('href="/toad-icon.png"'));
   check('login page has the password field, show button and the funny bits', ['id="pw"', 'type="password"', 'autocomplete="current-password"', 'id="eye"', 'No peeking!', 'Enter the swamp', 'g-jump', 'g-shake', 'prefers-reduced-motion'].every((x) => lg.includes(x)));
+  check('the stretched corner toad is gone (no photobomb element, no fixed-corner image)', !/class="pb"/.test(lg) && !/photobomb|\.pb\b/.test(lg));
+  check('new toads: lying (naps on the card, falls when he gives up) and thinking sticker (while checking and after a wrong password)', lg.includes('src="/toad-lying.png"') && lg.includes('src="/toad-think.png"') && lg.includes('body.nap .lying') && lg.includes('giveUp') && lg.includes('thinkOn'));
+  check('images keep their proportions: every image rule sets height:auto (the old stretching bug)', /\.lying\{[^}]*height:auto/.test(lg) && /\.think\{[^}]*height:auto/.test(lg) && /\.frog\{[^}]*height:auto/.test(lg));
   const tok = 'a-long-dashboard-token-123456';
   const sess = SES.createSession(tok, 1_000_000_000_000);
   check('session cookie: valid for its owner token', SES.verifySession(sess, tok, 1_000_000_000_000 + 60_000));
