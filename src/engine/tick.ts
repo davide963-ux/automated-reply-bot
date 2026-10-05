@@ -46,7 +46,7 @@ async function releaseLock(holder: string): Promise<void> {
 }
 
 /** Last outcome of the POST / REPLY engine, so the dashboard can say why nothing was drafted. */
-async function recordEngineResult(kind: 'post' | 'reply', result: string, at: Date): Promise<void> {
+async function recordEngineResult(kind: 'post' | 'reply' | 'poll', result: string, at: Date): Promise<void> {
   await setState(`last_${kind}_result`, { result, at: at.toISOString() }).catch((err) => log.warn('could not record engine result', { err }));
 }
 
@@ -80,7 +80,15 @@ export async function runTick(deps: Deps): Promise<TickReport> {
     const jobs = await runDueJobs(
       {
         ...(collect ? { COLLECT_NEWS: async () => void (await collectNews(deps.accountId, deps.fetchText, now)) } : {}),
-        ...(collect ? { POLL_X: async () => void (await pollX(deps, settings)) } : {}),
+        ...(collect
+          ? {
+              POLL_X: async () => {
+                const r = await pollX(deps, settings);
+                const summary = `new from X: ${r.mentions} mention(s), ${r.tracked} tracked, ${r.search} search`;
+                await recordEngineResult('poll', r.stoppedBecause ? `${summary} | STOPPED: ${r.stoppedBecause}` : summary, now);
+              },
+            }
+          : {}),
         RECONCILE: async () => void (await reconcileUncertain(deps)),
         ...(running
           ? {

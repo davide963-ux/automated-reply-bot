@@ -637,6 +637,7 @@ async function main(): Promise<void> {
   const t1 = await runTick(mkDeps());
   const names = t1.jobs.map((j) => j.job).sort().join(',');
   check('first tick runs all six jobs', names === 'COLLECT_NEWS,MAINTENANCE,POLL_X,POST,RECONCILE,REPLY' && t1.jobs.every((j) => j.ok), JSON.stringify(t1));
+  check('the tick records the X poll result for the dashboard', /new from X: \d+ mention/.test(String(await one(`select value->>'result' v from bot_state where key = 'last_poll_result'`))));
   check('end-to-end through the tick: one post published', fx.posts.length === 1 && (await postCount('PUBLISHED')) === 1);
   check('exactly one PENDING job per type queued for later', Number(await one(`select count(*)::text v from scheduled_jobs where status = 'PENDING' and run_at > now()`)) === 6);
   const t2 = await runTick(mkDeps());
