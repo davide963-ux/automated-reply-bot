@@ -561,6 +561,8 @@ async function main(): Promise<void> {
     : { decision: 'REPLY', confidence: 0.85, reason: 'adds value', style: 'neutral', topic: 'etf', sentiment: 'positive', text: 'Flows do look strong, though one day is a small sample.' };
   const polled = await pollX(mkDeps(), await loadSettings());
   check('poll stores mentions + tracked tweets, never our own', polled.mentions === 3 && polled.tracked === 2 && !polled.stoppedBecause, JSON.stringify(polled));
+  const cutShort = await pollX(mkDeps(), await loadSettings(), Date.now() - 1);
+  check('poll out of time: tracked accounts are skipped (not read), and it says so', cutShort.tracked === 0 && /time budget/.test(cutShort.stoppedBecause ?? ''), JSON.stringify(cutShort));
   check('a reply to us is classified reply_to_us', (await one<string>(`select source v from x_tweets_seen where x_post_id = '101'`)) === 'reply_to_us');
   check('X identity verified and stored', (await one<string>('select x_user_id v from accounts where id = $1', [accountId])) === '42');
   const callsBefore = JSON.stringify(llm.calls);

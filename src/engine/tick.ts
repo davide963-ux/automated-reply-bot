@@ -88,7 +88,7 @@ export async function runTick(rawDeps: Deps): Promise<TickReport> {
         ...(collect
           ? {
               POLL_X: async () => {
-                const r = await pollX(deps, settings);
+                const r = await pollX(deps, settings, engineDeadline);
                 const summary = `new from X: ${r.mentions} mention(s), ${r.tracked} tracked, ${r.search} search`;
                 await recordEngineResult('poll', r.stoppedBecause ? `${summary} | STOPPED: ${r.stoppedBecause}` : summary, now);
               },
